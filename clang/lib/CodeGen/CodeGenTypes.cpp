@@ -19,6 +19,7 @@
 #include "CGRecordLayout.h"
 #include "TargetInfo.h"
 #include "clang/AST/ASTContext.h"
+#include "clang/AST/Attr.h"
 #include "clang/AST/DeclCXX.h"
 #include "clang/AST/DeclObjC.h"
 #include "clang/AST/Expr.h"
@@ -832,6 +833,11 @@ llvm::StructType *CodeGenTypes::ConvertRecordDeclType(const RecordDecl *RD) {
   // TagDecl's are not necessarily unique, instead use the (clang)
   // type connected to the decl.
   const Type *Key = Context.getCanonicalTagType(RD).getTypePtr();
+
+  // Check for COM interface early (before RD is overwritten) so that
+  // even forward declarations trigger !llvm.com_interfaces emission.
+  if (const auto *CXXRD = dyn_cast<CXXRecordDecl>(RD))
+    CGM.emitCOMIUnknownMetadata(CXXRD);
 
   llvm::StructType *&Entry = RecordDeclTypes[Key];
 

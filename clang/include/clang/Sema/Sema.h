@@ -6007,6 +6007,7 @@ public:
   /// Check that the C++ class annoated with "trivial_abi" satisfies all the
   /// conditions that are needed for the attribute to have an effect.
   void checkIllFormedTrivialABIStruct(CXXRecordDecl &RD);
+  void CheckCOMIUnknownRecord(CXXRecordDecl &RD);
 
   /// Check that VTable Pointer authentication is only being set on the first
   /// first instantiation of the vtable

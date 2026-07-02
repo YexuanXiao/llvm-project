@@ -1874,6 +1874,11 @@ llvm::GlobalVariable *MicrosoftCXXABI::getAddrOfVTable(const CXXRecordDecl *RD,
     // Queue up this vtable for possible deferred emission.
     CGM.addDeferredVTable(RD);
 
+    // If this class or any base has [[clang::com_iunknown]], mark the module
+    // with !llvm.com_interfaces named metadata so LLVM passes can identify
+    // COM interfaces even without vtable definitions.
+    CGM.emitCOMIUnknownMetadata(RD);
+
 #ifndef NDEBUG
     // Create all the vftables at once in order to make sure each vftable has
     // a unique mangled name.

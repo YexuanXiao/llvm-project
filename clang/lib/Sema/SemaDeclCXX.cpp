@@ -7171,6 +7171,9 @@ void Sema::CheckCompletedCXXClass(Scope *S, CXXRecordDecl *Record) {
   if (Record->hasAttr<TrivialABIAttr>())
     checkIllFormedTrivialABIStruct(*Record);
 
+  if (Record->hasAttr<COMIUnknownAttr>())
+    CheckCOMIUnknownRecord(*Record);
+
   // Set HasTrivialSpecialMemberForCall if the record has attribute
   // "trivial_abi".
   bool HasTrivialABI = Record->hasAttr<TrivialABIAttr>();
@@ -10775,6 +10778,66 @@ void Sema::checkIllFormedTrivialABIStruct(CXXRecordDecl &RD) {
 
   if (!HasNonDeletedCopyOrMoveConstructor()) {
     PrintDiagAndRemoveAttr(0);
+    return;
+  }
+}
+
+void Sema::CheckCOMIUnknownRecord(CXXRecordDecl &RD) {
+  if (!RD.hasAttr<COMIUnknownAttr>())
+    return;
+
+  if (!Context.getTargetInfo().getTriple().isOSWindows()) {
+    Diag(RD.getAttr<COMIUnknownAttr>()->getLocation(),
+         diag::err_com_iunknown_requires_windows);
+    return;
+  }
+
+  SmallVector<CXXMethodDecl *, 4> VFns;
+  for (auto *MD : RD.methods()) {
+    if (!MD->isVirtual())
+      continue;
+    VFns.push_back(MD);
+    if (VFns.size() == 4)
+      break;
+  }
+
+  if (VFns.size() != 3) {
+    Diag(RD.getAttr<COMIUnknownAttr>()->getLocation(),
+         diag::err_com_iunknown_wrong_vfunc_count);
+    return;
+  }
+
+  ASTContext &Ctx = getASTContext();
+
+  // QueryInterface ABI: returns 32-bit integer/enum, param0=ref(to 128-bit
+  // GUID), param1=pointer
+  CXXMethodDecl *QI = VFns[0];
+  QualType QIRet = QI->getReturnType();
+  if (!(QIRet->isIntegerType() || QIRet->isEnumeralType()) ||
+      Ctx.getTypeSize(QIRet) != 32 || QI->getNumParams() != 2 ||
+      !QI->getParamDecl(0)->getType()->isReferenceType() ||
+      Ctx.getTypeSize(QI->getParamDecl(0)->getType()->getPointeeType()) !=
+          128 ||
+      !QI->getParamDecl(1)->getType()->isPointerType()) {
+    Diag(QI->getLocation(), diag::err_com_iunknown_bad_query_interface);
+    return;
+  }
+
+  // AddRef ABI: no params, returns 32-bit unsigned integer
+  CXXMethodDecl *AR = VFns[1];
+  if (AR->getNumParams() != 0 ||
+      !AR->getReturnType()->isUnsignedIntegerType() ||
+      Ctx.getTypeSize(AR->getReturnType()) != 32) {
+    Diag(AR->getLocation(), diag::err_com_iunknown_bad_addref);
+    return;
+  }
+
+  // Release ABI: no params, returns 32-bit unsigned integer
+  CXXMethodDecl *Rel = VFns[2];
+  if (Rel->getNumParams() != 0 ||
+      !Rel->getReturnType()->isUnsignedIntegerType() ||
+      Ctx.getTypeSize(Rel->getReturnType()) != 32) {
+    Diag(Rel->getLocation(), diag::err_com_iunknown_bad_release);
     return;
   }
 }

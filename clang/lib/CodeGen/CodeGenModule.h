@@ -18,6 +18,7 @@
 #include "CodeGenTypes.h"
 #include "SanitizerMetadata.h"
 #include "TrapReasonBuilder.h"
+#include "clang/AST/Attr.h"
 #include "clang/AST/DeclCXX.h"
 #include "clang/AST/DeclObjC.h"
 #include "clang/AST/DeclOpenMP.h"
@@ -1555,6 +1556,34 @@ public:
   /// Return the appropriate linkage for the vtable, VTT, and type information
   /// of the given class.
   llvm::GlobalVariable::LinkageTypes getVTableLinkage(const CXXRecordDecl *RD);
+
+  /// Emit !llvm.com_interfaces named metadata if RD (or any base) has
+  /// the [[clang::com_iunknown]] attribute. This lets LLVM passes identify
+  /// COM interface vtables without relying on vtable definitions.
+  void emitCOMIUnknownMetadata(const CXXRecordDecl *RD) {
+    bool IsCOM = RD->hasAttr<COMIUnknownAttr>();
+    if (!IsCOM) {
+      RD->forallBases([&](const CXXRecordDecl *Base) {
+        if (Base->hasAttr<COMIUnknownAttr>()) {
+          IsCOM = true;
+          return false;
+        }
+        return true;
+      });
+    }
+    if (IsCOM && !getModule().getNamedMetadata("llvm.com_interfaces"))
+      getModule().getOrInsertNamedMetadata("llvm.com_interfaces");
+    if (IsCOM) {
+      auto *NMD = getModule().getNamedMetadata("llvm.com_interfaces");
+      // Add an operand so that getNumOperands() > 0 distinguishes
+      // real COM modules from empty placeholder metadata.
+      if (NMD->getNumOperands() == 0)
+        NMD->addOperand(llvm::MDNode::get(
+            getLLVMContext(),
+            llvm::MDString::get(getLLVMContext(),
+                                RD->getQualifiedNameAsString())));
+    }
+  }
 
   /// Return the store size, in character units, of the given LLVM type.
   CharUnits GetTargetTypeStoreSize(llvm::Type *Ty) const;

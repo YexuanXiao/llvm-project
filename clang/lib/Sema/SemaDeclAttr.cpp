@@ -7868,6 +7868,9 @@ ProcessDeclAttribute(Sema &S, Scope *scope, Decl *D, const ParsedAttr &AL,
     if (!AL.isUsedAsTypeAttr())
       handleSimpleAttribute<NoThrowAttr>(S, D, AL);
     break;
+  case ParsedAttr::AT_COMIUnknown:
+    handleSimpleAttribute<COMIUnknownAttr>(S, D, AL);
+    break;
   case ParsedAttr::AT_CUDAShared:
     handleSharedAttr(S, D, AL);
     break;

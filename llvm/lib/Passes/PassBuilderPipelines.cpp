@@ -90,6 +90,8 @@
 #include "llvm/Transforms/Scalar/AlignmentFromAssumptions.h"
 #include "llvm/Transforms/Scalar/AnnotationRemarks.h"
 #include "llvm/Transforms/Scalar/BDCE.h"
+#include "llvm/Transforms/Scalar/COMAddRefReleaseElim.h"
+#include "llvm/Transforms/Scalar/COMQIMerge.h"
 #include "llvm/Transforms/Scalar/CallSiteSplitting.h"
 #include "llvm/Transforms/Scalar/ConstraintElimination.h"
 #include "llvm/Transforms/Scalar/CorrelatedValuePropagation.h"
@@ -499,6 +501,11 @@ PassBuilder::buildO1FunctionSimplificationPipeline(OptimizationLevel Level,
   // scalars.
   FPM.addPass(SROAPass(SROAOptions::ModifyCFG));
 
+  // Merge redundant COM QueryInterface calls (C++/WinRT pattern).
+  // MUST run before EarlyCSE: EarlyCSE eliminates redundant QI calls
+  // but does not insert compensation AddRef, breaking reference counting.
+  FPM.addPass(COMQIMergePass());
+
   // Catch trivial redundancies
   FPM.addPass(EarlyCSEPass(true /* Enable mem-ssa. */));
 
@@ -618,6 +625,10 @@ PassBuilder::buildO1FunctionSimplificationPipeline(OptimizationLevel Level,
   FPM.addPass(InstCombinePass());
   invokePeepholeEPCallbacks(FPM, Level);
 
+  // Eliminate redundant AddRef/Release pairs (COM reference counting).
+  // Runs after all CFG simplification to maximize matching opportunity.
+  FPM.addPass(COMAddRefReleaseElimPass());
+
   return FPM;
 }
 
@@ -640,8 +651,14 @@ PassBuilder::buildFunctionSimplificationPipeline(OptimizationLevel Level,
   // scalars.
   FPM.addPass(SROAPass(SROAOptions::ModifyCFG));
 
+  // Merge redundant COM QueryInterface calls (C++/WinRT pattern).
+  // MUST run before EarlyCSE: EarlyCSE eliminates redundant QI calls
+  // but does not insert compensation AddRef, breaking reference counting.
+  FPM.addPass(COMQIMergePass());
+
   // Catch trivial redundancies
   FPM.addPass(EarlyCSEPass(true /* Enable mem-ssa. */));
+
   if (EnableKnowledgeRetention)
     FPM.addPass(AssumeSimplifyPass());
 
@@ -831,6 +848,12 @@ PassBuilder::buildFunctionSimplificationPipeline(OptimizationLevel Level,
                                   .sinkCommonInsts(true)));
   FPM.addPass(InstCombinePass());
   invokePeepholeEPCallbacks(FPM, Level);
+
+  // Final ARE pass: after all CFG simplification, Release calls have been
+  // consolidated, enabling maximal AddRef/Release pair elimination.
+  // Must run after COMQIMerge (which creates qi.addref) and after
+  // SimplifyCFG/InstCombine (which consolidate cleanup blocks).
+  FPM.addPass(COMAddRefReleaseElimPass());
 
   return FPM;
 }

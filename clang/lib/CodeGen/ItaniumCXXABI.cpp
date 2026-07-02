@@ -2242,6 +2242,10 @@ llvm::GlobalVariable *ItaniumCXXABI::getAddrOfVTable(const CXXRecordDecl *RD,
   // Queue up this vtable for possible deferred emission.
   CGM.addDeferredVTable(RD);
 
+  // If this class or any base has [[clang::com_iunknown]], mark the module
+  // with !llvm.com_interfaces named metadata.
+  CGM.emitCOMIUnknownMetadata(RD);
+
   SmallString<256> Name;
   llvm::raw_svector_ostream Out(Name);
   getMangleContext().mangleCXXVTable(RD, Out);

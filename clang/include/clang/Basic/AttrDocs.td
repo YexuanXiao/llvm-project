@@ -4623,6 +4623,31 @@ It is only supported when using the Microsoft C++ ABI.
   }];
 }
 
+def COMIUnknownDocs : Documentation {
+  let Category = DocCatDecl;
+  let Content = [{
+The ``com_iunknown`` attribute marks a C++ class/struct as a COM interface
+that inherits from ``IUnknown``.  This allows Clang to annotate the generated
+vtable with ``!com_vtable`` metadata in LLVM IR, enabling LLVM optimization
+passes to identify COM interface vtables and perform COM-specific
+optimizations (e.g., merging redundant ``QueryInterface`` calls).
+
+This attribute is automatically deduced by the compiler if the class has a
+base class marked with ``[[clang::com_iunknown]]``, or it can be explicitly
+applied to the root ``IUnknown`` declaration.
+
+Example usage:
+
+.. code-block:: c++
+
+  struct [[clang::com_iunknown]] IUnknown {
+    virtual HRESULT QueryInterface(REFIID riid, void** ppv) = 0;
+    virtual ULONG AddRef() = 0;
+    virtual ULONG Release() = 0;
+  };
+  }];
+}
+
 def LayoutVersionDocs : Documentation {
   let Category = DocCatDecl;
   let Content = [{

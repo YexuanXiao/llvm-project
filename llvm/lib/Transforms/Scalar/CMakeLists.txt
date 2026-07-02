@@ -4,6 +4,8 @@ add_llvm_component_library(LLVMScalarOpts
   AnnotationRemarks.cpp
   BDCE.cpp
   CallSiteSplitting.cpp
+  COMQIMerge.cpp
+  COMAddRefReleaseElim.cpp
   ConstantHoisting.cpp
   ConstraintElimination.cpp
   CorrelatedValuePropagation.cpp

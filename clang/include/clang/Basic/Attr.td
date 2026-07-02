@@ -3847,6 +3847,14 @@ def Uuid : InheritableAttr {
   let Documentation = [Undocumented];
 }
 
+def COMIUnknown : InheritableAttr {
+  let Spellings = [Clang<"com_iunknown">];
+  let Subjects = SubjectList<[CXXRecord]>;
+  let LangOpts = [CPlusPlus];
+  let Documentation = [COMIUnknownDocs];
+  let SimpleHandler = 1;
+}
+
 def VectorSize : TypeAttr {
   let Spellings = [GCC<"vector_size">];
   let Args = [ExprArgument<"NumBytes">];

@@ -4159,6 +4159,22 @@ def note_cannot_use_trivial_abi_reason : Note<
   "it has a __weak field|it has a field of a non-trivial class type|"
   "it has an address-discriminated '__ptrauth' field}1">;
 
+def err_com_iunknown_wrong_vfunc_count : Error<
+  "'com_iunknown' attribute requires exactly 3 virtual functions">;
+def err_com_iunknown_bad_query_interface : Error<
+  "'com_iunknown' attribute requires first virtual function to have "
+  "IUnknown::QueryInterface ABI: returns 32-bit integer, "
+  "first parameter is a reference to a 128-bit GUID type, "
+  "second parameter is a pointer to a pointer type">;
+def err_com_iunknown_bad_addref : Error<
+  "'com_iunknown' attribute requires second virtual function to have "
+  "IUnknown::AddRef ABI: takes no parameters and returns 32-bit unsigned integer">;
+def err_com_iunknown_bad_release : Error<
+  "'com_iunknown' attribute requires third virtual function to have "
+  "IUnknown::Release ABI: takes no parameters and returns 32-bit unsigned integer">;
+def err_com_iunknown_requires_windows : Error<
+  "'com_iunknown' attribute is only supported on Windows targets">;
+
 // OverflowBehavior attribute
 def err_overflow_behavior_unknown_ident
     : Error<"'%0' is not a valid argument to attribute %1, only 'wrap' and "
