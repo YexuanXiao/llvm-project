@@ -123,6 +123,7 @@ protected:
   void replaceSwiftErrorOps();
   void salvageDebugInfo();
   void handleFinalSuspend();
+  void handleCancellation();
 };
 
 class SwitchCloner : public BaseCloner {

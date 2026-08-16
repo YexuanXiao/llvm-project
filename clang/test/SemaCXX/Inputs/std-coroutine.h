@@ -22,6 +22,9 @@ struct coroutine_handle {
   static coroutine_handle from_address(void *) noexcept;
   static coroutine_handle from_promise(Promise &promise);
   constexpr void* address() const noexcept;
+  // Cooperative cancellation (PxxxxR0).
+  void request_cancel() const;
+  bool cancel_requested() const;
 };
 template <>
 struct coroutine_handle<void> {

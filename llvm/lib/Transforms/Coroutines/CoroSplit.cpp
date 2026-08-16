@@ -493,6 +493,49 @@ void coro::BaseCloner::handleFinalSuspend() {
   }
 }
 
+// In the destroy and cleanup functions, the cancellation paths are removed:
+// destroying a cancelled coroutine runs the normal destroy path (destroying
+// live objects), not `unhandled_cancellation()`. This rewrites
+//   - the cancellation check at the resume entry
+//     (`br i1 %cancel, label %cancel.entry, label %resume.switch`), and
+//   - the frontend-generated check right before the body
+//     (`br i1 %flag, label %cancel.entry, label %body.cont`)
+// to unconditional branches to their continuation. The cancellation entry
+// block then becomes unreachable and is cleaned up by postSplitCleanup.
+void coro::BaseCloner::handleCancellation() {
+  assert(Shape.ABI == coro::ABI::Switch && Shape.SwitchLowering.HasCancel);
+  if (!isSwitchDestroyFunction())
+    return;
+
+  // Rewire the resume-entry check (if it is still conditional).
+  auto *Entry = cast<BasicBlock>(VMap[Shape.SwitchLowering.ResumeEntryBlock]);
+  if (auto *Br = dyn_cast<CondBrInst>(Entry->getTerminator())) {
+    // resume.entry: br i1 %cancel, label %cancel.entry, label %resume.switch
+    //           -> br label %resume.switch
+    auto *SwitchBB = Br->getSuccessor(1);
+    Value *Cond = Br->getCondition();
+    Br->eraseFromParent();
+    UncondBrInst::Create(SwitchBB, Entry);
+    RecursivelyDeleteTriviallyDeadInstructions(Cond);
+  }
+
+  // Rewire every other conditional branch targeting the cancellation entry
+  // block (i.e. the frontend-generated check at the beginning of the body).
+  auto *CancelBB = cast<BasicBlock>(VMap[Shape.SwitchLowering.CancelEntryBlock]);
+  SmallVector<BasicBlock *, 4> Preds(predecessors(CancelBB));
+  for (BasicBlock *Pred : Preds) {
+    if (auto *Br = dyn_cast<CondBrInst>(Pred->getTerminator())) {
+      if (Br->getSuccessor(0) == CancelBB) {
+        auto *ContBB = Br->getSuccessor(1);
+        Value *Cond = Br->getCondition();
+        Br->eraseFromParent();
+        UncondBrInst::Create(ContBB, Pred);
+        RecursivelyDeleteTriviallyDeadInstructions(Cond);
+      }
+    }
+  }
+}
+
 static FunctionType *
 getFunctionTypeFromAsyncSuspend(AnyCoroSuspendInst *Suspend) {
   auto *AsyncSuspend = cast<CoroSuspendAsyncInst>(Suspend);
@@ -1125,6 +1168,12 @@ void coro::BaseCloner::create() {
     // resume the coroutine suspended at the final suspend point.
     if (Shape.SwitchLowering.HasFinalSuspend)
       handleFinalSuspend();
+    // The cancellation check at the resume entry only applies to the resume
+    // function. In the destroy/cleanup functions it is removed: destroying a
+    // cancelled coroutine runs the normal destroy path (destroying live
+    // objects), not `unhandled_cancellation()`.
+    if (Shape.SwitchLowering.HasCancel)
+      handleCancellation();
     break;
   case coro::ABI::Async:
   case coro::ABI::Retcon:
@@ -1212,6 +1261,13 @@ static void replaceFrameSizeAndAlignment(coro::Shape &Shape) {
 }
 
 static void postSplitCleanup(Function &F) {
+  // Remove the `llvm.coro.cancelled` marker. It is only needed to locate the
+  // cancellation entry block, which has already been wired up by
+  // createResumeEntryBlock.
+  for (Instruction &I : llvm::make_early_inc_range(instructions(F)))
+    if (auto *II = dyn_cast<CoroCancelledInst>(&I))
+      II->eraseFromParent();
+
   removeUnreachableBlocks(F);
 
 #ifndef NDEBUG
@@ -1568,6 +1624,27 @@ private:
 
     IRBuilder<> Builder(NewEntry);
     auto *FramePtr = Shape.FramePtr;
+
+    // Cancellation-aware coroutines: check the cancellation flag before
+    // dispatching to a suspend point. If a cancellation was requested while
+    // the coroutine was suspended, resume into the cancellation entry block
+    // (which runs `promise.unhandled_cancellation()`) instead of continuing
+    // at the suspend point. The flag lives right after the promise object and
+    // is initialized to false in the ramp function (see updateCoroFrame).
+    if (Shape.SwitchLowering.HasCancel) {
+      auto *SwitchBB = BasicBlock::Create(C, "resume.switch", &F);
+      auto *FlagPtr = Builder.CreateInBoundsPtrAdd(
+          FramePtr,
+          ConstantInt::get(Type::getInt64Ty(C),
+                           Shape.SwitchLowering.CancelFlagOffset),
+          "cancel.flag.addr");
+      auto *CancelFlag =
+          Builder.CreateLoad(Builder.getInt1Ty(), FlagPtr, "cancel.flag");
+      Builder.CreateCondBr(CancelFlag,
+                           Shape.SwitchLowering.CancelEntryBlock, SwitchBB);
+      Builder.SetInsertPoint(SwitchBB);
+    }
+
     Value *GepIndex = createSwitchIndexPtr(Shape, Builder, FramePtr);
     auto *Index = Builder.CreateLoad(Shape.getIndexType(), GepIndex, "index");
     auto *Switch =
@@ -1692,6 +1769,19 @@ private:
                               Function *DestroyFn, Function *CleanupFn) {
     IRBuilder<> Builder(&*Shape.getInsertPtAfterFramePtr());
     LLVMContext &C = ResumeFn->getContext();
+
+    // Initialize the cancellation flag to false. The coroutine frame has just
+    // been allocated (or the frame pointer is null for elided allocations),
+    // so the flag must be explicitly zeroed before the coroutine can be
+    // suspended and potentially cancelled.
+    if (Shape.SwitchLowering.HasCancel) {
+      auto *FlagPtr = Builder.CreateInBoundsPtrAdd(
+          Shape.FramePtr,
+          ConstantInt::get(Type::getInt64Ty(C),
+                           Shape.SwitchLowering.CancelFlagOffset),
+          "cancel.flag.addr");
+      Builder.CreateStore(ConstantInt::getFalse(C), FlagPtr);
+    }
 
     // Resume function pointer
     Value *ResumeAddr = Shape.FramePtr;
@@ -2069,6 +2159,16 @@ static void removeCoroIsInRampFromRampFunction(const coro::Shape &Shape) {
   }
 }
 
+// The `llvm.coro.cancelled` marker in the ramp function lives in the
+// (unreachable) cancellation entry block. The clones already have it removed
+// by postSplitCleanup; remove it here as well so the ramp function does not
+// carry a dead marker around.
+static void removeCoroCancelledFromRampFunction(Function &F) {
+  for (Instruction &I : llvm::make_early_inc_range(instructions(F)))
+    if (auto *II = dyn_cast<CoroCancelledInst>(&I))
+      II->eraseFromParent();
+}
+
 static bool hasSafeElideCaller(Function &F) {
   for (auto *U : F.users()) {
     if (auto *CB = dyn_cast<CallBase>(U)) {
@@ -2134,6 +2234,7 @@ static void doSplitCoroutine(Function &F, SmallVectorImpl<Function *> &Clones,
 
   removeCoroEndsFromRampFunction(Shape);
   removeCoroIsInRampFromRampFunction(Shape);
+  removeCoroCancelledFromRampFunction(F);
 
   if (shouldCreateNoAllocVariant)
     SwitchCoroutineSplitter::createNoAllocVariant(F, Shape, Clones);

@@ -1,0 +1,662 @@
+<pre class='metadata'>
+Title: Collaborative cancellation for coroutines
+Shortname: Pxxxx
+Revision: 0
+Status: P
+Date: 2026-08-16
+Group: WG21
+Audience: EWG, LEWG
+Editor: Bizwen Zhang<zhangbizwen@example.com>, zhangbizwen@example.com
+URL: https://example.com/cpp-proposals/coro-cancellation.html
+!Source: [coro-cancellation](https://example.com/cpp-proposals/coro-cancellation.bs)
+Markup Shorthands: markdown on
+Abstract: Allow a suspended coroutine to be cancelled. Cancellation is a
+          lightweight marking operation performed while the coroutine is
+          suspended; the effect takes place when the coroutine is resumed,
+          by invoking `promise.unhandled_cancellation()` followed by
+          `co_await promise.final_suspend()`. This provides a third,
+          exception-free exit path for coroutines, enabling efficient
+          propagation of cancellation across nested coroutine hierarchies
+          without throwing and catching an exception at every coroutine
+          frame.
+</pre>
+
+# Revision history # {#revisions}
+
+## Changes since R0 ## {#since-r0}
+
+- Initial revision. Rebased on [[!N5051]].
+
+# Introduction # {#introduction}
+
+C++20 coroutines are extremely flexible in most respects, with one notable
+exception: the ways in which a coroutine can be *stopped* are rigidly fixed.
+A coroutine can only be stopped in two ways: by returning a value, and by
+throwing an exception. This proposal argues that a third exit path —
+*collaborative cancellation* — is missing.
+
+The key insight is that the defining feature of a coroutine is that it can
+be *suspended*. A suspended coroutine can be *destroyed*, and a suspended
+coroutine can be *resumed*. This proposal observes that a suspended
+coroutine can also be *cancelled*:
+
+> We like suspended coroutines. A suspended coroutine already contains
+> all of the information needed to destroy it; it therefore also contains
+> all of the information needed to cancel it.
+
+The mechanism proposed here is deliberately minimal and, we believe,
+self-consistent:
+
+- while a coroutine is suspended, `request_cancel()` marks it as
+  *cancelled* — a cheap, non-throwing, non-destroying operation;
+- when a cancelled coroutine is subsequently *resumed*, the mark takes
+  effect: instead of continuing at the suspend point, the coroutine invokes
+  `promise.unhandled_cancellation()` and then
+  `co_await promise.final_suspend()`, mirroring what happens when an
+  exception escapes the coroutine body.
+
+This design has a number of desirable properties:
+
+- cancellation is a *marking* operation, not an *execution* operation, so
+  it can be performed concurrently with the resumer's thread without
+  executing any user code;
+- the compiler does not need to generate any additional destruction code:
+  cancellation reuses the existing suspension and finalization machinery;
+- cancellation is composable: it can be converted to an exception where an
+  exception is expected, and an exception can be converted to cancellation
+  where cancellation is expected;
+- nested coroutine hierarchies can propagate cancellation without throwing
+  and catching an exception at every coroutine frame.
+
+# Motivation # {#motivation}
+
+## The two exit paths ## {#two-exit-paths}
+
+Currently there are two ways to terminate the execution of a coroutine:
+
+1. *Returning a value.* If a coroutine is cancelled by returning a value
+   (for example, by checking `std::stop_token::stop_requested()` and
+   returning early), the coroutine's return type typically has to be
+   changed to something like `std::expected`, and every
+   `await_resume` has to return `std::expected` as well. This is
+   invasive, and it has not been widely adopted.
+
+2. *Throwing an exception.* Using exceptions to cancel coroutines is the
+   popular approach, and most libraries do it. But this approach has a
+   cost: exceptions are expensive. When a child coroutine is cancelled,
+   the exception is caught by the child's
+   `promise::unhandled_exception()`, stored, and rethrown into the parent
+   coroutine. This happens at *every* coroutine frame along the way.
+
+Consider a task hierarchy of depth $N$. Cancelling the innermost task
+causes $O(N)$ throw/catch pairs, each of which involves unwinding a
+coroutine frame, storing an `exception_ptr`, and rethrowing it in the
+parent. For deep hierarchies this cost dominates.
+
+## Cancellation as a third exit path ## {#third-exit-path}
+
+A coroutine can be suspended, and a suspended coroutine can be resumed or
+destroyed. This proposal adds a third operation on suspended coroutines:
+*cancellation*.
+
+Destruction of a suspended coroutine can be decomposed into two steps:
+
+1. destroying all live local variables of the coroutine body (objects whose
+   lifetimes are dynamic), and
+2. destroying the coroutine's common state (parameters, coroutine-internal
+   state, and the promise object, which live for the whole coroutine).
+
+Cancelling a coroutine is *not* destroying it; cancellation does strictly
+less than destruction. There is only one thing it can choose to do: dispose
+of the coroutine body's local variables, i.e. step 1.
+
+How does cancellation fit into the existing coroutine design? The key is to
+*mimic exceptions*. When a coroutine enters `unhandled_exception()` due to
+an exception, the coroutine is *not* destroyed. (If `unhandled_exception()`
+itself exits via an exception, the coroutine is destroyed and the exception
+propagates; see [CWG2934](https://wg21.link/cwg2934).) Cancelling a coroutine
+likewise does not mean destroying it immediately. Entering
+`unhandled_exception()` is part of the execution of the coroutine, so
+cancelling a coroutine should likewise be part of the execution of the
+coroutine.
+
+This leads to an apparent contradiction: a coroutine should be cancellable
+only while suspended, but cancellation should take effect during execution.
+
+The resolution is the key design idea of this proposal: **while suspended,
+cancelling a coroutine is marking it; when the coroutine is resumed, the
+mark takes effect.**
+
+Just as an uncaught exception causes the coroutine to execute
+`unhandled_exception()`, a cancelled coroutine executes
+`unhandled_cancellation()`. A cancelled coroutine therefore only needs to
+destroy its local variables, not its common state.
+
+With this design, all problems are solved. The design is self-consistent
+and lightweight: the compiler does not need to generate additional
+destruction code; it only needs to execute existing code more flexibly,
+based on the cancellation state.
+
+# Design considerations # {#design-considerations}
+
+## Cancellation is a marking operation ## {#marking}
+
+`request_cancel()` has no effect other than setting a flag in the coroutine
+state. In particular, it does not:
+
+- destroy the coroutine (unlike `destroy()`);
+- resume the coroutine (unlike `resume()`);
+- throw an exception;
+- execute any user code.
+
+This means `request_cancel()` can be called from any execution agent,
+including a different thread, without running arbitrary code in the
+coroutine. The only synchronization requirement is on the flag itself.
+
+The flag is observed when the coroutine is resumed: resumption of a
+cancelled coroutine does not continue at the suspend point, but instead
+enters the cancellation handler. This defuses the "suspended vs. executing"
+contradiction described in [[#third-exit-path]].
+
+## Preconditions ## {#preconditions}
+
+`request_cancel()` requires the coroutine to be suspended and not already
+cancelled. `cancel_requested()` requires the coroutine to be suspended.
+
+The reason for these preconditions is that the cancellation flag is part of
+the coroutine state, which is only stable while the coroutine is suspended.
+Resuming or destroying a coroutine concurrently with `request_cancel()`
+results in a data race on the coroutine state, which is already undefined
+behavior for concurrent resumption.
+
+## The cancellation handler is optional ## {#handler-optional}
+
+Unlike `unhandled_exception()`, `unhandled_cancellation()` is not required
+to be defined by every promise type. A coroutine whose promise type does not
+define `unhandled_cancellation()` is not *cancellation-aware*; calling
+`request_cancel()` on such a coroutine is undefined behavior. This mirrors
+the situation of a promise type that does not define
+`unhandled_exception()` when exceptions are enabled: the program is
+ill-formed only if the coroutine body can actually throw.
+
+[Note: A coroutine that is not cancellation-aware does not carry the
+cancellation flag in its coroutine state, so no runtime cost is paid by
+coroutines that do not opt in. — end note]
+
+## Relationship with `std::stop_token` ## {#stop-token}
+
+`std::stop_token` is a *cooperative* mechanism: the callee checks
+`stop_requested()` at well-defined points and cooperates. This proposal is
+complementary: `std::stop_token` answers *whether* cancellation has been
+requested; `request_cancel()` provides a cheap way to *deliver* that
+request to a suspended coroutine, and `unhandled_cancellation()` provides a
+uniform place to *respond* to it.
+
+The two mechanisms compose naturally, e.g.:
+
+```cpp
+struct stop_token_awaiter {
+    std::stop_token t;
+    bool cancelled = false;
+
+    bool await_ready() { return false; }
+
+    template <class Promise>
+    void await_suspend(std::coroutine_handle<Promise> handle) {
+        if (t.stop_requested()) {
+            cancelled = true;
+            handle.request_cancel();
+        }
+    }
+
+    void await_resume() {
+        if (cancelled) {
+            std::unreachable();
+        }
+    }
+};
+```
+
+## Exceptions and cancellation are interconvertible ## {#interconvertible}
+
+Because cancellation is a *state* rather than a control-flow mechanism, it
+can be converted to an exception where an exception is expected, and vice
+versa. The awaiter examples in [[#examples]] show how to:
+
+- convert an exception produced by a child coroutine into a cancellation of
+  the parent (so that intermediate coroutines do not pay the cost of
+  throwing and catching);
+- convert a cancellation of a child coroutine into an exception in the
+  parent (for APIs that must surface cancellation as an exception).
+
+## No new syntax ## {#no-new-syntax}
+
+This proposal introduces no new syntax. The entire feature consists of two
+member functions of `std::coroutine_handle` and one new promise member
+function, `unhandled_cancellation()`. This makes the feature implementable
+by existing compilers with modest effort (see the companion implementation
+plan) and adoptable incrementally by libraries.
+
+# Proposal # {#proposal}
+
+## Core language: cancellation handler ## {#core-language}
+
+[Note: The following changes are relative to [[!N5051]].]
+
+A coroutine whose promise type declares a member `unhandled_cancellation`
+is a *cancellation-aware* coroutine.
+
+In the replacement body of a cancellation-aware coroutine
+([dcl.fct.def.coroutine]), a *cancellation handler* is established as
+follows: when the coroutine is resumed and its cancellation state is set,
+instead of continuing at the suspend point, the coroutine behaves as if the
+following were executed:
+
+```cpp
+promise.unhandled_cancellation();
+goto final-suspend;     // i.e. co_await promise.final_suspend();
+```
+
+where `final-suspend` is the exposition-only label of the final await
+expression ([dcl.fct.def.coroutine]).
+
+If `promise.unhandled_cancellation()` exits via an exception, the coroutine
+state is destroyed — the promise object, the parameter copies, and the
+coroutine-internal state are destroyed, as if by `destroy()` — and the
+exception propagates to the caller or resumer.
+
+[Note: The current wording for `unhandled_exception()` says that the
+coroutine "is considered suspended at the final suspend point" when
+`unhandled_exception()` exits via an exception. This is a known wording
+defect, [CWG2934](https://wg21.link/cwg2934): implementations destroy the
+promise object, the parameter copies, and the coroutine state before
+propagating the exception, and CWG confirmed (2024-11-08) that the
+implementations are correct and that the normative wording needs to be
+amended. This proposal specifies the corrected semantics for
+`unhandled_cancellation()`: an exception escaping from the cancellation
+handler destroys the coroutine, exactly as an exception escaping from
+`unhandled_exception()` does in practice. — end note]
+
+## Library: `coroutine_handle` ## {#library}
+
+Add to the primary template `std::coroutine_handle<Promise>`:
+
+```cpp
+// [coroutine.handle.cancel], cancellation
+void request_cancel() const;
+bool cancel_requested() const;
+```
+
+*Preconditions:* `*this` refers to a suspended coroutine.
+For `request_cancel()`: the coroutine has not already been cancelled.
+
+*Effects of `request_cancel()`:* sets the cancellation state of the
+coroutine.
+
+*Returns of `cancel_requested()`:* `true` if `request_cancel()` has been
+called for the coroutine, otherwise `false`.
+
+The cancellation state is *sticky*: once set, it remains set until the
+coroutine is destroyed, mirroring `std::stop_token::stop_requested()`.
+
+A cancellation *takes effect* when the coroutine is resumed: the resumption
+does not continue at the suspend point, but instead enters the cancellation
+handler described in [[#core-language]].
+
+[Note: `coroutine_handle<void>` does not provide these member functions.
+Locating the cancellation state in the coroutine frame requires knowledge
+of the promise type's size and alignment; a type-erased handle does not
+carry that information. Awaiter code that needs to cancel a coroutine of
+unknown promise type can use a template as shown in [[#examples]]. — end note]
+
+## Summary of behavior ## {#summary}
+
+| Operation | Suspended coroutine | Effect |
+|---|---|---|
+| `resume()` | not cancelled | continues at the suspend point |
+| `resume()` | cancelled | executes `unhandled_cancellation()`, then final suspend |
+| `destroy()` | any | destroys the coroutine (unchanged) |
+| `request_cancel()` | any | sets the cancellation state (no user code runs) |
+| `cancel_requested()` | any | queries the cancellation state |
+
+# Examples # {#examples}
+
+## Cancelling when a task cannot be scheduled ## {#example-schedule}
+
+```cpp
+template <class Promise>
+void await_suspend(std::coroutine_handle<Promise> handle) {
+    if (!post_to_queue(handle)) {
+        handle.request_cancel();
+    }
+}
+```
+
+If the promise type is known, the handle can be typed as
+`std::coroutine_handle<promise>` and the promise can attach more detailed
+cancellation information.
+
+## Observing cancellation in the handler ## {#example-observe}
+
+`cancel_requested()` exists so that the promise does not need to store a
+separate `bool` for observers to check. A typical use of
+`unhandled_cancellation` is to store extra cancellation state inside the
+promise, e.g. to convert it to an exception:
+
+```cpp
+struct task {
+    struct promise_type {
+        std::exception_ptr e;
+        // ...
+
+        void unhandled_cancellation() {
+            if (!std::coroutine_handle<promise>::from_promise(*this).cancel_requested()) {
+                std::unreachable();
+            }
+            e = std::make_exception_ptr(cancelled_exception{});
+        }
+
+        void unhandled_exception() {
+            e = std::current_exception();
+        }
+    };
+};
+```
+
+## Propagating cancellation between coroutines ## {#example-propagate}
+
+To propagate cancellation state between coroutines, an awaiter can be
+designed as follows:
+
+```cpp
+struct propagate_cancellation_awaiter {
+    std::coroutine_handle<promise> child;
+
+    bool await_ready() { return false; }
+
+    void await_suspend(std::coroutine_handle<promise> parent) {
+        if (child.cancel_requested()) {
+            parent.request_cancel();
+        }
+        // ...
+    }
+    void await_resume() {}
+};
+```
+
+## Avoiding repeated throwing and catching ## {#example-no-rethrow}
+
+The new API can be used to avoid throwing and catching exceptions in every
+coroutine frame. Different awaiters can convert exceptions to cancellation,
+and cancellation to exceptions:
+
+```cpp
+struct exception_to_cancellation_awaiter {
+    std::coroutine_handle<promise> child;
+    bool await_ready() { return false; }
+    void await_suspend(std::coroutine_handle<promise> parent) {
+        if (auto &&e = child.promise().get_exception()) {
+            parent.promise().set_exception(e);
+            parent.request_cancel();
+        }
+        // ...
+    }
+    void await_resume() {}
+};
+
+struct cancellation_to_exception_awaiter {
+    std::coroutine_handle<promise> child;
+    std::exception_ptr curr_e;
+    bool await_ready() { return false; }
+    void await_suspend(std::coroutine_handle<promise> parent) {
+        if (auto &&e = child.promise().get_exception(); child.cancel_requested() && !e) {
+            curr_e = std::make_exception_ptr(cancelled_exception{});
+        } else if (e) {
+            curr_e = e;
+        }
+        // ...
+    }
+    void await_resume() {
+        if (curr_e) {
+            std::rethrow_exception(curr_e);
+        }
+    }
+};
+```
+
+Only the coroutine that *originates* the exception needs to throw, and only
+the coroutine that *handles* the exception needs to catch. Intermediate
+coroutines that merely propagate the exception perform no throwing or
+catching at all.
+
+## Nested generators ## {#example-generator}
+
+Consider a nested `std::generator` ([[P2505R5]]). Today, when the innermost
+generator throws, the exception is stored and rethrown at every nesting
+level: `unhandled_exception()` of every intermediate generator captures the
+exception, and the recursive awaiter rethrows it into the parent. With this
+proposal, the innermost generator stores the exception once, marks the
+parent as cancelled, and every intermediate generator merely propagates the
+cancellation mark. Only the root generator, at the boundary with the
+client, converts the mark back into an exception — a single throw/catch
+pair regardless of the nesting depth. See the accompanying benchmark
+([[#impact-on-performance]]) for measurements.
+
+# Impact on the standard # {#impact-on-the-standard}
+
+This proposal modifies:
+
+- [dcl.fct.def.coroutine] — coroutine definitions, to specify the
+  cancellation handler;
+- [coroutine.handle] — class template `coroutine_handle`, to add
+  `request_cancel()` and `cancel_requested()`.
+
+No other parts of the standard are affected. In particular, no changes to
+the grammar, to `coroutine_traits`, or to any other standard library
+component are required.
+
+# Impact on existing code # {#impact-on-existing-code}
+
+No existing code becomes ill-formed. Coroutines whose promise types do not
+define `unhandled_cancellation()` are unaffected and do not carry a
+cancellation flag. Libraries that wish to support cancellation opt in by:
+
+- defining `unhandled_cancellation()` in their promise types, and
+- calling `request_cancel()` / `cancel_requested()` where appropriate.
+
+Because the new member functions are additive, they do not break binary
+compatibility of existing coroutine frames (see [[#impact-on-abi]]).
+
+# Impact on performance # {#impact-on-performance}
+
+## Impact on ABI ## {#impact-on-abi}
+
+For coroutines that are not cancellation-aware, there is no change to the
+coroutine frame layout and no runtime cost.
+
+For cancellation-aware coroutines, an implementation needs to store one
+flag in the coroutine state and check it on resumption. On the Itanium ABI
+and the LLVM switched-resume ABI, this can be done without changing the
+fixed header offsets (resume/destroy function pointers and promise
+projection), by allocating the flag after the header fields. This keeps the
+promise projection (`coro.promise`) and the `done()` query ABI-stable.
+
+[Note: The proposed extension point for LLVM is a single marker intrinsic
+used only to locate the cancellation entry block, plus front-end builtins for
+`request_cancel()` / `cancel_requested()` that lower to the existing promise
+projection intrinsics and a flag field; coroutines that do not use the new
+facility have byte-identical frame layouts to today. — end note]
+
+## Measured benchmark ## {#benchmark}
+
+To validate the motivation, we compared exception propagation through nested
+generators with and without the cancellation chain, using the stock
+`std::generator` implementation (one throw/catch pair per nesting level) and
+a variant that uses `request_cancel()` / `unhandled_cancellation()` to
+propagate the failure. The innermost generator throws after yielding a few
+elements; the benchmark measures one round per failing iteration, plus a
+non-throwing baseline.
+
+Clang 21, `-O2`, x86-64, rounds = 200,000:
+
+| nesting depth | stock (ns/round overhead) | cancellation (ns/round overhead) | speedup |
+|---|---|---|---|
+| 3 | 12,096 | 4,655 | 2.6× |
+| 5 | 17,590 | 4,900 | 3.6× |
+
+Key observations:
+
+- The stock implementation's overhead grows linearly with the nesting depth
+  (≈ 2.7 µs per extra level): each level performs one `rethrow_exception` and
+  one catch.
+- The cancellation chain's overhead is nearly constant (≈ 0.25 µs per extra
+  level): intermediate frames only store a flag and transfer to the parent
+  via symmetric transfer, which is a tail call and does not add stack or
+  throw/catch cost.
+- The normal (non-throwing) path is essentially unaffected (within noise;
+  the cancellation-aware coroutines pay one flag load + branch per resume).
+
+The benchmark also confirmed that the cancellation chain must be driven by
+symmetric transfer: transferring back to the parent on the failure path lets
+the whole chain unwind within a single client-side resume, so no stale
+yielded values are exposed to the caller.
+
+## Impact on code size and speed ## {#impact-on-speed}
+
+- `request_cancel()` lowers to a single store of a boolean flag;
+- `cancel_requested()` lowers to a single load;
+- the resumption check is one load and one branch, executed only for
+  cancellation-aware coroutines;
+- no destruction code is generated for the cancellation path, because the
+  cancellation handler is followed by the existing final suspend.
+
+The cancellation path therefore costs, at most, a few instructions per
+coroutine that opts in, and nothing for coroutines that do not.
+
+# Proposed wording # {#proposed-wording}
+
+## Core language ## {#wording-core}
+
+[Editor's note: The following wording is relative to [[!N5051]].]
+[Drafting note: wording to be refined with the project editor.]
+
+Modify [dcl.fct.def.coroutine] paragraph 4 (the replacement body) as
+follows:
+
+> A coroutine behaves as if the top-level cv-qualifiers in all
+> *parameter-declaration*s in the declarator of its *function-definition*
+> were removed and its *function-body* were replaced by the following
+> *replacement body*:
+>
+> ```
+> {
+>   promise-type promise promise-constructor-arguments ;
+>   try {
+>     co_await promise.initial_suspend() ;
+>     function-body
+>   } catch ( ... ) {
+>     if (!initial-await-resume-called)
+>       throw ;
+>     promise.unhandled_exception() ;
+>   }
+>   final-suspend:
+>   co_await promise.final_suspend() ;
+> }
+> ```
+
+Insert a new paragraph after [dcl.fct.def.coroutine] paragraph 4:
+
+> A coroutine whose promise type declares a member function
+> `unhandled_cancellation` is *cancellation-aware*. If a cancellation-aware
+> coroutine is resumed and its cancellation state is set, the resumption
+> does not continue at the suspend point; instead, the coroutine behaves as
+> if the following were executed:
+>
+> ```
+> promise.unhandled_cancellation() ;
+> goto final-suspend ;
+> ```
+>
+> [Note: The cancellation state is set by
+> `request_cancel()` ([coroutine.handle.cancel]). — end note]
+
+Modify [dcl.fct.def.coroutine] paragraph 18:
+
+> If the evaluation of the expression `promise.unhandled_exception()`
+> exits via an exception, the coroutine is considered suspended at the
+> final suspend point and the exception propagates to the caller or
+> resumer.
+
+Add:
+
+> If the evaluation of the expression `promise.unhandled_cancellation()`
+> exits via an exception, the coroutine is considered suspended at the
+> final suspend point and the exception propagates to the caller or
+> resumer.
+
+## Library ## {#wording-library}
+
+Modify [coroutine.handle.general] (class template `coroutine_handle`) as
+follows:
+
+> Add to `coroutine_handle<void>`:
+>
+> ```cpp
+> // [coroutine.handle.cancel], cancellation
+> void request_cancel() const;
+> bool cancel_requested() const;
+> ```
+>
+> Add to `coroutine_handle<Promise>`:
+>
+> ```cpp
+> // [coroutine.handle.cancel], cancellation
+> void request_cancel() const;
+> bool cancel_requested() const;
+> ```
+
+Insert a new subclause [coroutine.handle.cancel], "Cancellation":
+
+> ```
+> void request_cancel() const;
+> ```
+>
+> *Preconditions:* `*this` refers to a suspended coroutine. The coroutine
+> has not already been cancelled.
+>
+> *Effects:* Sets the cancellation state of the coroutine.
+>
+> ```
+> bool cancel_requested() const;
+> ```
+>
+> *Preconditions:* `*this` refers to a suspended coroutine.
+>
+> *Returns:* `true` if the cancellation state of the coroutine is set,
+> otherwise `false`.
+
+# Acknowledgements # {#acknowledgements}
+
+We would like to thank the authors of [[P2505R5]] for `std::generator`,
+whose nested-generator exception propagation problem motivated the
+benchmark in this proposal, and the LLVM coroutine maintainers for their
+patient explanations of the switched-resume ABI.
+
+# References # {#references}
+
+<pre class="biblio">
+{
+  "N5051": {
+    "href": "https://wg21.link/n5051",
+    "title": "Working Draft, Programming Languages — C++",
+    "publisher": "ISO/IEC JTC1/SC22/WG21",
+    "date": "2026"
+  },
+  "P2505R5": {
+    "href": "https://wg21.link/p2505r5",
+    "title": "Monadic Generator",
+    "publisher": "ISO/IEC JTC1/SC22/WG21",
+    "date": "2023"
+  }
+}
+</pre>

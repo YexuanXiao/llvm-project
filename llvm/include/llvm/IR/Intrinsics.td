@@ -2037,6 +2037,21 @@ def int_coro_await_suspend_handle : Intrinsic<[],
                                       [llvm_ptr_ty, llvm_ptr_ty, llvm_ptr_ty],
                                       [Throws]>;
 
+// Coroutine Cancellation Intrinsics. Used to implement coroutine cancellation
+// (PxxxxR0 "Collaborative cancellation for coroutines").
+//
+// A coroutine whose promise declares `unhandled_cancellation` is
+// cancellation-aware: its coroutine frame carries an extra cancellation flag
+// right after the promise object. The flag is queried by the frontend through
+// `llvm.coro.promise` + pointer arithmetic (see clang `__builtin_coro_*`),
+// so no dedicated set/query intrinsic is needed. This intrinsic is only a
+// no-op marker: the frontend emits it as the first instruction of the
+// cancellation entry block (the block that runs `promise.unhandled_cancellation()`
+// when a cancelled coroutine is resumed). CoroSplit scans it to locate that
+// block and then removes it. It intentionally has no `IntrNoMem` attribute so
+// that early optimization passes cannot delete it before CoroSplit runs.
+def int_coro_cancelled : Intrinsic<[], [], []>;
+
 // Coroutine Lowering Intrinsics. Used internally by coroutine passes.
 
 def int_coro_subfn_addr : DefaultAttrsIntrinsic<

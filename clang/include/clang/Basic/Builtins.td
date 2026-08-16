@@ -5044,6 +5044,23 @@ def CoroSuspend : CoroLangBuiltin {
   let Prototype = "char(_Constant bool)";
 }
 
+// Set the cancellation flag of a suspended coroutine. The flag lives in the
+// coroutine frame right after the promise object. `align`/`size` are
+// `alignof`/`sizeof` of the promise type; they locate the flag relative to
+// the promise, which is found via `llvm.coro.promise` (an existing intrinsic).
+def CoroRequestCancel : CoroLangBuiltin {
+  let Spellings = ["__builtin_coro_request_cancel"];
+  let Attributes = [NoThrow];
+  let Prototype = "void(void*, _Constant size_t, _Constant size_t)";
+}
+
+// Query the cancellation flag of a suspended coroutine.
+def CoroCancelRequested : CoroLangBuiltin {
+  let Spellings = ["__builtin_coro_cancel_requested"];
+  let Attributes = [NoThrow];
+  let Prototype = "bool(void*, _Constant size_t, _Constant size_t)";
+}
+
 // Pointer authentication builtins.
 def PtrauthStrip : Builtin {
   let Spellings = ["__builtin_ptrauth_strip"];

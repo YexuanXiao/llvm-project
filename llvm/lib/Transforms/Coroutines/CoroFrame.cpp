@@ -815,6 +815,7 @@ static void buildFrameLayout(Function &F, const DominatorTree &DT,
 
   AllocaInst *PromiseAlloca = Shape.getPromiseAlloca();
   std::optional<FieldIDType> SwitchIndexFieldId;
+  std::optional<FieldIDType> CancelFlagFieldId;
   IntegerType *SwitchIndexType = nullptr;
 
   if (Shape.ABI == coro::ABI::Switch) {
@@ -831,6 +832,16 @@ static void buildFrameLayout(Function &F, const DominatorTree &DT,
     if (PromiseAlloca)
       FrameData.setFieldIndex(
           PromiseAlloca, B.addFieldForAlloca(PromiseAlloca, /*header*/ true));
+
+    // Cancellation-aware coroutines carry a cancellation flag (i8) right
+    // after the promise object. The frontend locates it via `llvm.coro.promise`
+    // + `sizeof(promise)` (see clang `__builtin_coro_request_cancel`), so the
+    // flag must be the very next byte after the promise. An i8 field with
+    // natural alignment (1) follows the promise field without any padding.
+    if (Shape.SwitchLowering.HasCancel) {
+      auto *Int8Ty = Type::getInt8Ty(F.getContext());
+      CancelFlagFieldId = B.addField(Int8Ty, MaybeAlign(), /*header*/ true);
+    }
 
     // Add a field to store the suspend index.  This doesn't need to
     // be in the header.
@@ -889,6 +900,11 @@ static void buildFrameLayout(Function &F, const DominatorTree &DT,
     Shape.SwitchLowering.IndexType = SwitchIndexType;
     Shape.SwitchLowering.IndexAlign = IndexField.Alignment.value();
     Shape.SwitchLowering.IndexOffset = IndexField.Offset;
+
+    if (CancelFlagFieldId) {
+      auto CancelField = B.getLayoutField(*CancelFlagFieldId);
+      Shape.SwitchLowering.CancelFlagOffset = CancelField.Offset;
+    }
 
     // Also round the frame size up to a multiple of its alignment, as is
     // generally expected in C/C++.

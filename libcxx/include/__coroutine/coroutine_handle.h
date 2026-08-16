@@ -154,6 +154,19 @@ public:
     return *static_cast<_Promise*>(__builtin_coro_promise(this->__handle_, alignof(_Promise), false));
   }
 
+  // [coroutine.handle.cancel], cancellation
+  _LIBCPP_HIDE_FROM_ABI void request_cancel() const {
+    _LIBCPP_ASSERT_VALID_EXTERNAL_API_CALL(__is_suspended(),
+                                           "request_cancel() can be called only on suspended coroutines");
+    __builtin_coro_request_cancel(__handle_, alignof(_Promise), sizeof(_Promise));
+  }
+
+  [[nodiscard]] _LIBCPP_HIDE_FROM_ABI bool cancel_requested() const {
+    _LIBCPP_ASSERT_VALID_EXTERNAL_API_CALL(__is_suspended(),
+                                           "cancel_requested() can be called only on suspended coroutines");
+    return __builtin_coro_cancel_requested(__handle_, alignof(_Promise), sizeof(_Promise));
+  }
+
 private:
   _LIBCPP_HIDE_FROM_ABI bool __is_suspended() const {
     // FIXME actually implement a check for if the coro is suspended.

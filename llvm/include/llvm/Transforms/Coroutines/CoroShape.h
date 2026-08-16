@@ -121,6 +121,19 @@ struct Shape {
     bool HasFinalSuspend;
     bool HasUnwindCoroEnd;
     bool HasCoroElideNoAllocVariant;
+    // Whether the coroutine is cancellation-aware, i.e. its promise declares
+    // `unhandled_cancellation` and the frontend emitted a `llvm.coro.cancelled`
+    // marker in the cancellation entry block. Such coroutines carry a
+    // cancellation flag (i8) in their coroutine frame, right after the promise
+    // object.
+    bool HasCancel;
+    // Offset of the cancellation flag (i8) in the coroutine frame. Only valid
+    // if HasCancel is true. The frontend locates the same flag with
+    // `llvm.coro.promise` + `sizeof(promise)` (see `__builtin_coro_request_cancel`).
+    unsigned CancelFlagOffset;
+    // The block that runs `promise.unhandled_cancellation()` when a cancelled
+    // coroutine is resumed. It is marked by a `llvm.coro.cancelled` instruction.
+    BasicBlock *CancelEntryBlock;
   };
 
   struct RetconLoweringStorage {

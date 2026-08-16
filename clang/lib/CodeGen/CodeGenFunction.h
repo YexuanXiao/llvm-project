@@ -3705,6 +3705,8 @@ public:
                          bool ignoreResult = false);
   LValue EmitCoyieldLValue(const CoyieldExpr *E);
   RValue EmitCoroutineIntrinsic(const CallExpr *E, unsigned int IID);
+  // Lower `__builtin_coro_request_cancel` / `__builtin_coro_cancel_requested`.
+  RValue EmitCoroutineCancel(const CallExpr *E, bool IsRequest);
 
   void EmitSYCLKernelCallStmt(const SYCLKernelCallStmt &S);
 
