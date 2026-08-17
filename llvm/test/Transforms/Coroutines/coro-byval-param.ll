@@ -35,7 +35,7 @@ define ptr @foo(ptr nocapture readonly byval(%struct.A) align 8 %a1) #0 !prof !0
 ; CHECK-NEXT:    call void @llvm.memcpy.p0.p0.i64(ptr align 8 [[A1_SPILL_ADDR]], ptr align 8 [[A1]], i64 24, i1 false)
 ; CHECK-NEXT:    [[CALL2:%.*]] = call ptr @_ZN4task12promise_type17get_return_objectEv(ptr nonnull dereferenceable(1) [[__PROMISE_RELOAD_ADDR]])
 ; CHECK-NEXT:    call void @initial_suspend(ptr nonnull dereferenceable(1) [[__PROMISE_RELOAD_ADDR]])
-; CHECK-NEXT:    [[INDEX_ADDR5:%.*]] = getelementptr inbounds i8, ptr [[TMP3]], i64 17
+; CHECK-NEXT:    [[INDEX_ADDR5:%.*]] = getelementptr inbounds i8, ptr [[TMP3]], i64 18
 ; CHECK-NEXT:    store i1 false, ptr [[INDEX_ADDR5]], align 1
 ; CHECK-NEXT:    call fastcc void @_ZNSt12experimental13coroutines_v116coroutine_handleIN4task12promise_typeEE12from_addressEPv(ptr [[TMP3]]) #[[ATTR2:[0-9]+]]
 ; CHECK-NEXT:    ret ptr [[CALL2]]

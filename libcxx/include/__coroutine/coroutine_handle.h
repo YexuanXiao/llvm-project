@@ -154,6 +154,35 @@ public:
     return *static_cast<_Promise*>(__builtin_coro_promise(this->__handle_, alignof(_Promise), false));
   }
 
+  // [coroutine.handle.cancel], cancellation
+  // The cancellation flag of a cancellation-aware coroutine lives in the
+  // coroutine frame right after the promise object. The builtins take
+  // `alignof`/`sizeof` of the promise type to locate the flag relative to the
+  // promise, which is found via `llvm.coro.promise` (an existing intrinsic).
+  // The members are constrained: they exist only if the promise type is
+  // cancellation-aware (declares `unhandled_cancellation()`), enforced at
+  // compile time by a requires expression; a non-cancellation-aware promise
+  // simply has no `request_cancel`/`cancel_requested` members. Preconditions
+  // (undefined behavior if violated): the coroutine is suspended; for
+  // `request_cancel()`, it is not already cancelled. The frame always
+  // reserves the flag byte, so a call that circumvents the constraints stays
+  // in bounds, but that is an implementation detail, not a guarantee.
+  // `coroutine_handle<void>` does not provide these operations because the
+  // type-erased handle does not carry the promise size and alignment.
+  _LIBCPP_HIDE_FROM_ABI void request_cancel() const
+    requires requires(_Promise& __p) { __p.unhandled_cancellation(); } {
+    _LIBCPP_ASSERT_VALID_EXTERNAL_API_CALL(__is_suspended(),
+                                           "request_cancel() can be called only on suspended coroutines");
+    __builtin_coro_request_cancel(__handle_, alignof(_Promise), sizeof(_Promise));
+  }
+
+  [[nodiscard]] _LIBCPP_HIDE_FROM_ABI bool cancel_requested() const
+    requires requires(_Promise& __p) { __p.unhandled_cancellation(); } {
+    _LIBCPP_ASSERT_VALID_EXTERNAL_API_CALL(__is_suspended(),
+                                           "cancel_requested() can be called only on suspended coroutines");
+    return __builtin_coro_cancel_requested(__handle_, alignof(_Promise), sizeof(_Promise));
+  }
+
 private:
   _LIBCPP_HIDE_FROM_ABI bool __is_suspended() const {
     // FIXME actually implement a check for if the coro is suspended.

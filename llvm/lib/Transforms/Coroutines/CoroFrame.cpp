@@ -832,6 +832,29 @@ static void buildFrameLayout(Function &F, const DominatorTree &DT,
       FrameData.setFieldIndex(
           PromiseAlloca, B.addFieldForAlloca(PromiseAlloca, /*header*/ true));
 
+    // Every coroutine with a promise carries a cancellation flag (i8) right
+    // after the promise object. The frontend locates it via
+    // `llvm.coro.promise` + `sizeof(promise)` (see clang
+    // `__builtin_coro_request_cancel`); it is read at suspension-point
+    // resumption blocks only if the promise declares
+    // `unhandled_cancellation`. LLVM itself does not care whether the flag
+    // is used: it is always reserved here, so the frontend's flag write
+    // stays in bounds even for coroutines that are not cancellation-aware
+    // (a lax implementation of the language-level precondition — calling
+    // `request_cancel()` on a coroutine whose promise does not declare
+    // `unhandled_cancellation` is undefined behavior per
+    // [coroutine.handle.cancel]; the standard does not promise that the
+    // write is harmless, LLVM merely makes it so). Coroutines without a
+    // promise (hand-written IR) have no cancellation flag, since the
+    // front-end builtins require `sizeof(promise)` and cannot target them
+    // anyway. An i8 field with natural alignment (1) follows the promise
+    // field without any padding; the resulting frame size is rounded up to
+    // the frame alignment, so this usually does not change the allocated
+    // size at all.
+    if (PromiseAlloca)
+      B.addField(Type::getInt8Ty(F.getContext()), MaybeAlign(),
+                 /*header*/ true);
+
     // Add a field to store the suspend index.  This doesn't need to
     // be in the header.
     unsigned IndexBits = std::max(1U, Log2_64_Ceil(Shape.CoroSuspends.size()));

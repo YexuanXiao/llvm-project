@@ -22,17 +22,17 @@ define void @a(i1 zeroext %cond) presplitcoroutine {
 ; CHECK-NEXT:    store ptr @a.resume, ptr [[TMP1]], align 8
 ; CHECK-NEXT:    [[DESTROY_ADDR:%.*]] = getelementptr inbounds i8, ptr [[TMP1]], i64 8
 ; CHECK-NEXT:    store ptr @a.destroy, ptr [[DESTROY_ADDR]], align 8
-; CHECK-NEXT:    [[A_RELOAD_ADDR:%.*]] = getelementptr inbounds i8, ptr [[TMP1]], i64 17
+; CHECK-NEXT:    [[A_RELOAD_ADDR:%.*]] = getelementptr inbounds i8, ptr [[TMP1]], i64 18
 ; CHECK-NEXT:    [[B_RELOAD_ADDR:%.*]] = getelementptr inbounds i8, ptr [[TMP1]], i64 544
 ; CHECK-NEXT:    br i1 [[COND]], label %[[IF_THEN:.*]], label %[[IF_ELSE:.*]]
 ; CHECK:       [[IF_THEN]]:
 ; CHECK-NEXT:    call void @consume(ptr nonnull [[A_RELOAD_ADDR]])
-; CHECK-NEXT:    [[INDEX_ADDR4:%.*]] = getelementptr inbounds i8, ptr [[TMP1]], i64 517
+; CHECK-NEXT:    [[INDEX_ADDR4:%.*]] = getelementptr inbounds i8, ptr [[TMP1]], i64 518
 ; CHECK-NEXT:    store i1 false, ptr [[INDEX_ADDR4]], align 1
 ; CHECK-NEXT:    br label %[[AFTERCOROEND:.*]]
 ; CHECK:       [[IF_ELSE]]:
 ; CHECK-NEXT:    call void @consume.2(ptr nonnull [[B_RELOAD_ADDR]])
-; CHECK-NEXT:    [[INDEX_ADDR5:%.*]] = getelementptr inbounds i8, ptr [[TMP1]], i64 517
+; CHECK-NEXT:    [[INDEX_ADDR5:%.*]] = getelementptr inbounds i8, ptr [[TMP1]], i64 518
 ; CHECK-NEXT:    store i1 true, ptr [[INDEX_ADDR5]], align 1
 ; CHECK-NEXT:    br label %[[AFTERCOROEND]]
 ; CHECK:       [[AFTERCOROEND]]:

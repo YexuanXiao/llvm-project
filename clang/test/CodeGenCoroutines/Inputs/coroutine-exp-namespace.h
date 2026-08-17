@@ -52,6 +52,17 @@ template <typename Promise> struct coroutine_handle : coroutine_handle<> {
     p.ptr = __builtin_coro_promise(&promise, alignof(Promise), true);
     return p;
   }
+  // Cooperative cancellation (PxxxxR0). Constrained: only cancellation-aware
+  // promises (those declaring `unhandled_cancellation()`) have these members.
+  void request_cancel() const
+    requires requires(Promise& p) { p.unhandled_cancellation(); } {
+    __builtin_coro_request_cancel(ptr, alignof(Promise), sizeof(Promise));
+  }
+  bool cancel_requested() const
+    requires requires(Promise& p) { p.unhandled_cancellation(); } {
+    return __builtin_coro_cancel_requested(ptr, alignof(Promise),
+                                           sizeof(Promise));
+  }
 };
 
 template <typename _PromiseT>

@@ -1267,9 +1267,9 @@ bool CoroutineStmtBuilder::buildDependentStatements() {
   assert(this->IsValid && "coroutine already invalid");
   assert(!this->IsPromiseDependentType &&
          "coroutine cannot have a dependent promise type");
-  this->IsValid = makeOnException() && makeOnFallthrough() &&
-                  makeGroDeclAndReturnStmt() && makeReturnOnAllocFailure() &&
-                  makeNewAndDeleteExpr();
+  this->IsValid = makeOnException() && makeOnCancellation() &&
+                  makeOnFallthrough() && makeGroDeclAndReturnStmt() &&
+                  makeReturnOnAllocFailure() && makeNewAndDeleteExpr();
   return this->IsValid;
 }
 
@@ -1812,6 +1812,38 @@ bool CoroutineStmtBuilder::makeOnException() {
   }
 
   this->OnException = UnhandledException.get();
+  return true;
+}
+
+bool CoroutineStmtBuilder::makeOnCancellation() {
+  // Try to form 'p.unhandled_cancellation();'
+  assert(!IsPromiseDependentType &&
+         "cannot make statement while the promise type is dependent");
+
+  // `unhandled_cancellation` is optional: a coroutine whose promise does not
+  // declare it is not cancellation-aware, and no cancellation code is
+  // generated for it. Calling `request_cancel()` on such a coroutine violates
+  // the precondition of [coroutine.handle.cancel] (the coroutine must be
+  // cancellation-aware) and is undefined behavior. We deliberately do not
+  // diagnose a missing member: cancellation is opt-in and there is no way to
+  // statically know whether a coroutine will ever be cancelled. (Our
+  // implementation is lax: the frame always reserves the flag byte, so the
+  // write does not go out of bounds even for non-cancellation-aware
+  // coroutines — but the standard does not promise this.)
+  bool HasCancellation = false;
+  LookupResult LR = lookupMember(S, "unhandled_cancellation", PromiseRecordDecl,
+                                 Loc, HasCancellation);
+  if (!HasCancellation)
+    return true;
+
+  ExprResult Cancellation = buildPromiseCall(
+      S, Fn.CoroutinePromise, Loc, "unhandled_cancellation", {});
+  Cancellation = S.ActOnFinishFullExpr(Cancellation.get(), Loc,
+                                       /*DiscardedValue*/ false);
+  if (Cancellation.isInvalid())
+    return false;
+
+  this->OnCancellation = Cancellation.get();
   return true;
 }
 

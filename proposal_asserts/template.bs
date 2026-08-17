@@ -1,0 +1,316 @@
+<pre class='metadata'>
+Title: The Oxford variadic comma
+Shortname: P3176
+Revision: 1
+Status: P
+Date: 2024-11-22
+Group: WG21
+Audience: CWG
+Editor: Jan Schultke<janschultke@gmail.com>, janschultke@gmail.com
+ED: https://eisenwave.github.io/cpp-proposals/oxford-variadic-comma.html
+!Source: [eisenwave/cpp-proposals](https://github.com/Eisenwave/cpp-proposals/blob/master/src/oxford-variadic-comma.bs)
+Markup Shorthands: markdown on
+Abstract: Deprecate ellipsis parameters without a preceding comma.
+          The syntax `(int...)` is incompatible with C, detrimental to C++,
+          and easily replaceable with `(int, ...)`.
+</pre>
+
+Note: In this proposal, the term *ellipsis parameter* refers to non-template
+variadic parameters, i.e. "C-style varargs", i.e. as in `(/* */, ...)`.
+
+# Revision history # {#revisions}
+
+## Changes since R0 ## {#since-r0}
+
+- rebase on [[!N4981]]
+- inline "Editorial changes" and "Normative changes" subsections in [[#proposed-wording]]
+- reorder proposed expansions of *parameter-declaration-clause*
+- update an existing paragraph instead of adding a new one
+
+# Introduction # {#introduction}
+
+[[P1219R2]] "Homogeneous variadic function parameters" proposed a new feature,
+where the declarator `(int...)` would be interpreted as a
+homogeneous function template parameter pack.
+As part of this, it made it mandatory to separate an ellipsis parameter
+from preceding parameters using a comma.
+
+The proposal did not pass, but the change to commas achieved strong consensus
+by EWGI in Kona 2019.
+
+<blockquote>
+EWGI Poll: Make vararg declaration comma mandatory.
+<table>
+<thead>
+<tr>
+    <th>SF</th><th>F</th><th>N</th><th>A</th><th>SA</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+    <td>10</td><td>6</td><td>1</td><td>0</td><td>0</td>
+</tr>
+</tbody>
+</table>
+</blockquote>
+
+Going back to 2016, [[P0281R0]]
+"Remove comma elision in variadic function declarations" also proposed to make the
+variadic comma mandatory.
+Due to its impact on existing code, the proposal did not pass.
+
+My proposal continues where [[P1219R2]] and [[P0281R0]] have left off.
+However, I call for deprecation, not for removal, resulting in the following behavior:
+<pre line-highlight=8-10>
+// OK, function template parameter pack
+template&lt;class... Ts&gt; void a(Ts...);
+// OK, abbreviated function template parameter pack
+void b(auto...);
+// OK, ellipsis parameter, compatible with C
+void c(int, ...); 
+void d(...); 
+// Deprecated, ellipsis parameter, ill-formed in C
+void e(int...);
+void f(int x...);
+// Ill-formed, but unambiguous
+void g(int... args);
+</pre>
+
+[[P1161R3]] "Deprecate uses of the comma operator in subscripting expressions"
+has followed the same strategy.
+It deprecated `array[0, 1]` in C++20 which freed up the syntax for
+[[P2128R6]] "Multidimensional subscript operator" in C++23.
+
+## History and C compatibility ## {#history}
+
+The active version of the C standard ISO/IEC9899:2018
+permits functions which accept a variable number of arguments.
+Such functions must have a *parameter-type-list* containing at least one parameter,
+and the ellipsis parameter must be comma-separated:
+<blockquote>
+*parameter-type-list*:<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;*parameter-list*<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;*parameter-list* `,` `...`
+</blockquote>
+
+This syntax is unchanged since C89.
+C has never permitted the comma to be omitted.
+
+Such ellipsis parameters were originally introduced in C++ along with function
+prototypes, but without a separating comma.
+Only `int printf(char*...)` would have been well-formed in pre-standard C++,
+unlike `int printf(char*, ...)`.
+
+For the purpose of C compatibility, C++ later allowed the separating comma,
+resulting in the syntax (unchanged since C++98):
+
+<blockquote>
+*parameter-declaration-clause*:<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;*parameter-declaration-list*<sub>*opt*</sub> `...`<sub>*opt*</sub><br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;*parameter-declaration-list* `,` `...`
+</blockquote>
+
+With the introduction of function template parameter packs in C++11, there arose a
+syntactical ambiguity for a declarator `(T...)` between:
+- a parameter pack of type `T...` and
+- a single `T` followed by an ellipsis parameter.
+
+Currently, this ambiguity is resolved in favor of function template
+parameter packs, if that is well-formed.
+
+
+# Motivation # {#motivation}
+
+The declarator syntax `(int...)` interferes with future standardization.
+This has already impacted [[P1219R2]] and will impact any future proposal which
+attempts to utilize this syntax.
+
+Furthermore, variadic function templates are a much common and flexible way
+of writing variadic functions in C++.
+Many users associate `(int...)` with a pack, not with an ellipsis parameter.
+Not parsing this syntax as a parameter pack is confusing and has potential for mistakes:
+```cpp
+template<class Ts>
+void f(Ts...); // well-formed, but equivalent to (Ts, ...)
+```
+Users who are not yet familiar with variadic templates can easily make the mistake
+of omitting `...` after `class`.
+Another possible mistake can occur when writing generic lambdas or abbreviated function templates:
+```cpp
+// abbreviated variadic function template
+void g(auto ...args);
+// abbreviated non-variadic function template with ellipsis parameter
+void g(auto args...);
+```
+These two forms look awfully similar and are both well-formed with different meaning.
+The latter should be deprecated.
+
+Lastly, as explained above, only the declarator `(int, ...)` is compatible with C,
+not `(int...)`.
+The latter syntax is arguably pointless nowadays and only exists for the sake of
+compatibility with pre-standard C++.
+
+## `T......` ## {#six-packs}
+
+C++ also allows `(auto......)` or `(T......)`, which is a declarator containing a
+function template parameter pack, followed by an ellipsis parameter.
+Such *parameter-declaration-clause*s are confusing because conceptually,
+they consist of two separate constructs,
+but the syntax strongly suggests that all `.` apply to `auto` or `T`.
+
+Note: In other words, the declarator `(auto......)` is equivalent to `(auto..., ...)`.
+
+Note: Some users believe that this construct is entirely useless because one
+cannot provide any arguments to the ellipsis parameter.
+However, arguments can be provided if `T...` is template type
+pack which belongs to the surrounding class template.
+
+# Impact on the standard # {#impact-on-the-standard}
+
+This proposal is a pure deprecation.
+
+No new features are proposed or removed,
+no semantics are altered,
+and no existing code is impacted.
+
+# Impact on existing code # {#impact-on-existing-code}
+
+No code becomes ill-formed.
+Any deprecated uses of `T...` can be converted to `T, ...`.
+This transformation is simple enough to be performed by automatic tooling.
+
+I conjecture that a non-trivial amount of code would be deprecated.
+It is hard to find the exact amount because `(T...)`
+could be using an ellipsis parameter or a parameter pack; one doesn't know without compiling.
+This prevents simple syntax-based approaches to searching for occurrences.
+However, I was able to find a few dozen occurrences of `T......`
+using a GitHub code search for `/\(.+\.\.\.\.\.\.\).+\{/ language:c++` and other patterns.
+
+# Design considerations # {#design-considerations}
+
+## Why deprecate, not remove? ## {#why-deprecate}
+
+I do not propose to remove support for ellipsis parameters without a preceding
+comma because there is no feature proposed which requires such removal.
+A deprecation is sufficient at this time.
+
+Sudden removal has already been attempted by [[P0281R0]] and did not pass.
+It is unreasonable to suddenly break a large amount of C++ code with little motivation.
+
+The approach of [[P1161R3]] has more grace.
+
+## What about `(...)`? ## {#what-about-single-ellipsis}
+
+The declarator `(...)` should remain valid.
+It is compatible with C and unambiguous.
+
+## *parameter-declaration-clause* ## {#parameter-declaration-clause}
+
+In the discussion of this proposal, some users have expressed discontent with the current
+production for <i>[parameter-declaration-clause](https://eel.is/c++draft/dcl.fct#nt:parameter-declaration-clause)</i>.
+It would be possible to isolate the deprecated case with the following editorial change:
+<blockquote>
+*parameter-declaration-clause*:<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;*parameter-declaration-list*<sub>*opt*</sub><br>
+<mark>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;*parameter-declaration-list* `...`</mark><br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;*parameter-declaration-list* `,` `...`<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`...`
+</blockquote>
+
+Of these productions, the second (highlighted) is deprecated.
+If the variadic comma was made mandatory, this rule would simply be removed and the rest left intact.
+
+I believe that this editorial change is beneficial to the proposal and improves readability
+of the *parameter-declaration-clause* production in general.
+
+
+# Proposed wording # {#proposed-wording}
+
+<style>
+th, td, table {
+    border: 1px solid var(--text);
+}
+th, td {
+    border-left-width: 0;
+    border-right-width: 0;
+    text-align: center;
+}
+
+.indent {
+    margin-left: 2em;
+}
+
+mark {
+    background: rgba(255, 255, 93, 0.2);
+    color: inherit;
+}
+ins {
+    background: rgba(136, 255, 93, 0.2);
+    color: inherit;
+    text-decoration: underlined;
+}
+del {
+    background: rgba(255, 93, 93, 0.2);
+    color: inherit;
+    text-decoration: strikethrough;
+}
+</style>
+
+The proposed wording is relative to [[!N4981]].
+
+In subclause 9.3.4.6
+<a href=http://eel.is/c++draft/dcl.fct#26>[dcl.fct]</a>,
+modify paragraph 2 as follows:
+<blockquote>
+*parameter-declaration-clause*:<br>
+<del>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;*parameter-declaration-list*<sub>*opt*</sub> `...`<sub>*opt*</sub><br></del>
+<ins>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`...`</ins><br>
+<ins>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;*parameter-declaration-list*<sub>*opt*</sub></ins><br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;*parameter-declaration-list* `,` `...`<br>
+<ins>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;*parameter-declaration-list* `...`</mark></ins>
+</blockquote>
+
+Update Annex A, subclause A.7
+<a href="https://eel.is/c++draft/gram.dcl#:parameter-declaration-clause">[gram.dcl]</a> accordingly.
+
+In subclause 9.3.4.6
+<a href=http://eel.is/c++draft/dcl.fct>[dcl.fct]</a>,
+modify paragraph 3 as follows:
+<blockquote>
+Where syntactically correct and where
+"`...`" is not part of an *abstract-declarator*,
+<del>"`, ...`"</del><ins>"`...`"</ins>
+is synonymous with
+<del>"`...`"</del><ins>"`, ...`"</ins>.
+<ins>A *parameter-declaration-clause* of the form
+*parameter-declaration-list* `...` is deprecated.</ins>
+</blockquote>
+
+In Annex D <a href=http://eel.is/c++draft/depr>[depr]</a>,
+add a subclause:
+
+<blockquote>
+<b><ins>D.X Non-comma-separated ellipsis parameters [depr.ellipsis.comma]</ins></b>
+<p><ins>
+A *parameter-declaration-clause* of the form
+*parameter-declaration-list* `...` is deprecated.
+<br>[*Example*:
+<pre><ins>
+void f(int...);      // deprecated
+void g(auto...);     // OK, declares a function parameter pack
+void h(auto......);  // deprecated
+</ins></pre><ins>— *end example*]
+</ins></p>
+</blockquote>
+
+# Acknowledgements # {#acknowledgements}
+
+I thank Christof Meerwald for contributing proposed wording.
+
+I thank Arthur O'Dwyer for providing extensive editorial feedback,
+including the suggestion to update *parameter-declaration-clause*.
+
+<pre class=biblio>
+{
+}
+</pre>

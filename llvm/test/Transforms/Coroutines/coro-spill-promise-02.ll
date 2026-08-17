@@ -57,7 +57,7 @@ declare void @free(ptr)
 ; CHECK-NEXT:    [[__PROMISE:%.*]] = alloca %"class.task::promise_type", align 64
 ; CHECK-NEXT:    [[ID:%.*]] = call token @llvm.coro.id(i32 0, ptr null, ptr @f, ptr @f.resumers)
 ; CHECK-NEXT:    call void @consume2(ptr [[__PROMISE]])
-; CHECK-NEXT:    [[ALLOC:%.*]] = call ptr @malloc(i32 128)
+; CHECK-NEXT:    [[ALLOC:%.*]] = call ptr @malloc(i32 192)
 ; CHECK-NEXT:    [[HDL:%.*]] = call noalias nonnull ptr @llvm.coro.begin(token [[ID]], ptr [[ALLOC]])
 ; CHECK-NEXT:    store ptr @f.resume, ptr [[HDL]], align 8
 ; CHECK-NEXT:    [[DESTROY_ADDR:%.*]] = getelementptr inbounds i8, ptr [[HDL]], i64 8
@@ -72,7 +72,7 @@ declare void @free(ptr)
 ;
 ;
 ; CHECK-LABEL: define internal void @f.resume(
-; CHECK-SAME: ptr noundef nonnull align 64 dereferenceable(128) [[HDL:%.*]]) {
+; CHECK-SAME: ptr noundef nonnull align 64 dereferenceable(192) [[HDL:%.*]]) {
 ; CHECK-NEXT:  [[ENTRY_RESUME:.*:]]
 ; CHECK-NEXT:    [[DATA_RELOAD_ADDR:%.*]] = getelementptr inbounds i8, ptr [[HDL]], i64 16
 ; CHECK-NEXT:    [[__PROMISE_RELOAD_ADDR:%.*]] = getelementptr inbounds i8, ptr [[HDL]], i64 64
@@ -84,7 +84,7 @@ declare void @free(ptr)
 ;
 ;
 ; CHECK-LABEL: define internal void @f.destroy(
-; CHECK-SAME: ptr noundef nonnull align 64 dereferenceable(128) [[HDL:%.*]]) {
+; CHECK-SAME: ptr noundef nonnull align 64 dereferenceable(192) [[HDL:%.*]]) {
 ; CHECK-NEXT:  [[ENTRY_DESTROY:.*:]]
 ; CHECK-NEXT:    [[MEM:%.*]] = call ptr @llvm.coro.free(token poison, ptr [[HDL]])
 ; CHECK-NEXT:    call void @free(ptr [[MEM]])
@@ -92,7 +92,7 @@ declare void @free(ptr)
 ;
 ;
 ; CHECK-LABEL: define internal void @f.cleanup(
-; CHECK-SAME: ptr noundef nonnull align 64 dereferenceable(128) [[HDL:%.*]]) {
+; CHECK-SAME: ptr noundef nonnull align 64 dereferenceable(192) [[HDL:%.*]]) {
 ; CHECK-NEXT:  [[ENTRY_CLEANUP:.*:]]
 ; CHECK-NEXT:    call void @free(ptr null)
 ; CHECK-NEXT:    ret void

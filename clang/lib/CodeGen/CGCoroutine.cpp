@@ -49,6 +49,21 @@ struct clang::CodeGen::CGCoroData {
   // The promise type's 'unhandled_exception' handler, if it defines one.
   Stmt *ExceptionHandler = nullptr;
 
+  // Cooperative cancellation (PxxxxR0): non-null if the coroutine is
+  // cancellation-aware (its promise declares `unhandled_cancellation`).
+  // Every suspension point checks the cancellation flag when resumed and
+  // branches to this block, which runs `promise.unhandled_cancellation()`
+  // followed by the final suspend. LLVM's coroutine lowering does not need
+  // to know about this block; it is kept reachable by the frontend-generated
+  // checks, and becomes unreachable (and is removed) in the destroy/cleanup
+  // clones, whose resume branches are not reachable.
+  llvm::BasicBlock *CancelBB = nullptr;
+  // Size and alignment of the promise type, used to locate the cancellation
+  // flag (the byte right after the promise object) from suspension points
+  // and from `__builtin_coro_request_cancel` / `__builtin_coro_cancel_requested`.
+  CharUnits PromiseAlign;
+  CharUnits PromiseSize;
+
   // A temporary i1 alloca that stores whether 'await_resume' threw an
   // exception. If it did, 'true' is stored in this variable, and the coroutine
   // body must be skipped. If the promise type does not define an exception
@@ -338,6 +353,33 @@ static LValueOrRValue emitSuspendExpression(CodeGenFunction &CGF, CGCoroData &Co
 
   // Emit await_resume expression.
   CGF.EmitBlock(ReadyBlock);
+
+  // Cooperative cancellation (PxxxxR0): if this is a cancellation-aware
+  // coroutine, check the cancellation flag before running `await_resume`.
+  // The flag is the byte right after the promise object (guaranteed by
+  // CoroFrame::buildFrameLayout) and is located with the existing
+  // `llvm.coro.promise` intrinsic plus `sizeof(promise)`, so no LLVM
+  // control-flow support is needed: every suspension point pays one load and
+  // one branch, and the check is skipped at the final suspend point (resuming
+  // from there is undefined behavior). In the destroy/cleanup clones this
+  // check is unreachable and is removed together with the cancellation block.
+  if (Coro.CancelBB && !IsFinalSuspend) {
+    auto *PromiseFn = CGF.CGM.getIntrinsic(llvm::Intrinsic::coro_promise);
+    auto *AlignArg = Builder.getInt32(
+        static_cast<unsigned>(Coro.PromiseAlign.getQuantity()));
+    auto *Promise = Builder.CreateCall(
+        PromiseFn, {CGF.CurCoro.Data->CoroBegin, AlignArg, Builder.getFalse()});
+    auto *FlagPtr = Builder.CreateInBoundsGEP(
+        Builder.getInt8Ty(), Promise,
+        Builder.getSize(Coro.PromiseSize.getQuantity()));
+    auto *Flag = Builder.CreateAlignedLoad(Builder.getInt8Ty(), FlagPtr,
+                                           CharUnits::One());
+    auto *FlagCond = Builder.CreateICmpNE(Flag, Builder.getInt8(0));
+    auto *ContBB =
+        CGF.createBasicBlock(Prefix + Twine(".cancel.cont"));
+    Builder.CreateCondBr(FlagCond, Coro.CancelBB, ContBB);
+    CGF.EmitBlock(ContBB);
+  }
 
   // Exception handling requires additional IR. If the 'await_resume' function
   // is marked as 'noexcept', we avoid generating this additional IR.
@@ -1023,6 +1065,33 @@ void CodeGenFunction::EmitCoroutineBody(const CoroutineBodyStmt &S) {
     GroManager.EmitGroAlloca();
     GroManager.EmitGroInit();
 
+    // Cooperative cancellation (PxxxxR0): cancellation-aware coroutines carry
+    // a cancellation flag right after the promise object (guaranteed by
+    // CoroFrame::buildFrameLayout). The ramp function initializes it to false
+    // here, once, before the coroutine can be suspended. The flag is located
+    // with the existing `llvm.coro.promise` intrinsic plus `sizeof(promise)`,
+    // so no LLVM control-flow support is needed; every suspension point
+    // checks the flag when resumed (see emitSuspendExpression) and branches
+    // to the cancellation block generated below.
+    if (S.getCancellationHandler()) {
+      auto PromiseInfo =
+          getContext().getTypeInfoInChars(S.getPromiseDecl()->getType());
+      CurCoro.Data->PromiseAlign = PromiseInfo.Align;
+      CurCoro.Data->PromiseSize = PromiseInfo.Width;
+      CurCoro.Data->CancelBB = createBasicBlock("coro.cancel");
+
+      auto *PromiseFn = CGM.getIntrinsic(llvm::Intrinsic::coro_promise);
+      auto *AlignArg = Builder.getInt32(
+          static_cast<unsigned>(PromiseInfo.Align.getQuantity()));
+      auto *Promise = Builder.CreateCall(
+          PromiseFn, {CurCoro.Data->CoroBegin, AlignArg, Builder.getFalse()});
+      auto *FlagPtr = Builder.CreateInBoundsGEP(
+          Builder.getInt8Ty(), Promise,
+          Builder.getSize(PromiseInfo.Width.getQuantity()));
+      Builder.CreateAlignedStore(Builder.getInt8(0), FlagPtr,
+                                 CharUnits::One());
+    }
+
     EHStack.pushCleanup<CallCoroEnd>(EHCleanup);
 
     CurCoro.Data->CleanupJD = getJumpDestInCurrentScope(CleanupBB);
@@ -1066,10 +1135,29 @@ void CodeGenFunction::EmitCoroutineBody(const CoroutineBodyStmt &S) {
       emitBodyAndFallthrough(*this, S, S.getBody());
     }
 
+    // Generate the cancellation entry block. Every suspension point checks
+    // the cancellation flag when resumed and branches here (see
+    // emitSuspendExpression) instead of continuing at the suspend point. The
+    // flag is always reserved in the frame by LLVM's coroutine lowering (one
+    // byte after the promise), so no marker is needed to opt in. In the
+    // destroy/cleanup clones this block is unreachable (the suspension-point
+    // checks are unreachable there) and is removed automatically.
+    if (CurCoro.Data->CancelBB) {
+      // The insertion point is the normal completion path of the body (e.g.
+      // the continuation after `unhandled_exception` in the catch path, or a
+      // fallthrough block). Terminate it explicitly so that EmitBlock below
+      // does not retarget it to the cancellation entry block.
+      if (Builder.GetInsertBlock())
+        Builder.CreateBr(FinalBB);
+      EmitBlock(CurCoro.Data->CancelBB);
+      EmitStmt(S.getCancellationHandler());
+      Builder.CreateBr(FinalBB);
+    }
+
     // See if we need to generate final suspend.
     const bool CanFallthrough = Builder.GetInsertBlock();
     const bool HasCoreturns = CurCoro.Data->CoreturnCount > 0;
-    if (CanFallthrough || HasCoreturns) {
+    if (CanFallthrough || HasCoreturns || CurCoro.Data->CancelBB) {
       EmitBlock(FinalBB);
       CurCoro.Data->CurrentAwaitKind = AwaitKind::Final;
       EmitStmt(S.getFinalSuspendStmt());
@@ -1109,6 +1197,40 @@ void CodeGenFunction::EmitCoroutineBody(const CoroutineBodyStmt &S) {
   if (CXXRecordDecl *RD = FnRetTy->getAsCXXRecordDecl();
       RD && RD->hasAttr<CoroOnlyDestroyWhenCompleteAttr>())
     CurFn->setCoroDestroyOnlyWhenComplete();
+}
+
+// Lower `__builtin_coro_request_cancel(handle, align, size)` and
+// `__builtin_coro_cancel_requested(handle, align, size)`.
+//
+// The cancellation flag of a cancellation-aware coroutine lives in the
+// coroutine frame right after the promise object. The promise is located with
+// the existing `llvm.coro.promise` intrinsic (a fixed, ABI-stable offset from
+// the frame), and the flag is at `promise + sizeof(promise)`. The frame layout
+// guarantee is enforced by CoroFrame::buildFrameLayout (the flag field is the
+// very next byte after the promise field). This means no new LLVM intrinsic is
+// needed to manipulate the flag from arbitrary code.
+RValue CodeGenFunction::EmitCoroutineCancel(const CallExpr *E, bool IsRequest) {
+  auto *Handle = EmitScalarExpr(E->getArg(0));
+  auto *Align = EmitScalarExpr(E->getArg(1));
+  auto *Size = EmitScalarExpr(E->getArg(2));
+
+  // @llvm.coro.promise(ptr %handle, i32 %align, i1 false) returns the promise.
+  auto *PromiseFn = CGM.getIntrinsic(llvm::Intrinsic::coro_promise);
+  Align = Builder.CreateZExtOrTrunc(Align, Builder.getInt32Ty());
+  auto *Promise =
+      Builder.CreateCall(PromiseFn, {Handle, Align, Builder.getFalse()});
+
+  // The cancellation flag is the byte right after the promise object.
+  auto *FlagPtr =
+      Builder.CreateInBoundsGEP(Builder.getInt8Ty(), Promise, Size);
+
+  if (IsRequest) {
+    Builder.CreateAlignedStore(Builder.getInt8(1), FlagPtr, CharUnits::One());
+    return RValue::get(nullptr);
+  }
+  auto *Flag =
+      Builder.CreateAlignedLoad(Builder.getInt8Ty(), FlagPtr, CharUnits::One());
+  return RValue::get(Builder.CreateICmpNE(Flag, Builder.getInt8(0)));
 }
 
 // Emit coroutine intrinsic and patch up arguments of the token type.
