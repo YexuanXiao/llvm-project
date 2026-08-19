@@ -2024,6 +2024,8 @@ def int_coro_done : Intrinsic<[llvm_i1_ty], [llvm_ptr_ty],
 def int_coro_promise : Intrinsic<[llvm_ptr_ty],
                                  [llvm_ptr_ty, llvm_i32_ty, llvm_i1_ty],
                                  [IntrNoMem, NoCapture<ArgIndex<0>>]>;
+def int_coro_promise_unaware_cancel : Intrinsic<[], [], []>;
+def int_coro_promise_aware_cancel : Intrinsic<[], [], []>;
 
 def int_coro_await_suspend_void : Intrinsic<[],
                                        [llvm_ptr_ty, llvm_ptr_ty, llvm_ptr_ty],
@@ -2036,6 +2038,14 @@ def int_coro_await_suspend_bool : Intrinsic<[llvm_i1_ty],
 def int_coro_await_suspend_handle : Intrinsic<[],
                                       [llvm_ptr_ty, llvm_ptr_ty, llvm_ptr_ty],
                                       [Throws]>;
+
+def int_coro_request_cancel : Intrinsic<[], [llvm_ptr_ty],
+                                        [IntrArgMemOnly, NoCapture<ArgIndex<0>>]>;
+def int_coro_cancel_requested : Intrinsic<[llvm_i1_ty], [llvm_ptr_ty],
+                                          [IntrArgMemOnly,
+                                           ReadOnly<ArgIndex<0>>,
+                                           NoCapture<ArgIndex<0>>]>;
+def int_coro_cancelled : Intrinsic<[], [], []>;
 
 // Coroutine Lowering Intrinsics. Used internally by coroutine passes.
 

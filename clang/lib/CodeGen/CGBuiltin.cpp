@@ -6150,6 +6150,12 @@ RValue CodeGenFunction::EmitBuiltinExpr(const GlobalDecl GD, unsigned BuiltinID,
     return EmitCoroutineIntrinsic(E, Intrinsic::coro_id);
   case Builtin::BI__builtin_coro_promise:
     return EmitCoroutineIntrinsic(E, Intrinsic::coro_promise);
+  case Builtin::BI__builtin_coro_promise_v2: {
+    auto *CA = cast<llvm::ConstantInt>(EmitScalarExpr(E->getArg(1)));
+    return EmitCoroutineIntrinsic(
+        E, CA->isZero() ? llvm::Intrinsic::coro_promise_unaware_cancel
+                        : llvm::Intrinsic::coro_promise_aware_cancel);
+  }
   case Builtin::BI__builtin_coro_resume:
     EmitCoroutineIntrinsic(E, Intrinsic::coro_resume);
     return RValue::get(nullptr);
@@ -6176,6 +6182,11 @@ RValue CodeGenFunction::EmitBuiltinExpr(const GlobalDecl GD, unsigned BuiltinID,
     return EmitCoroutineIntrinsic(E, Intrinsic::coro_size);
   case Builtin::BI__builtin_coro_align:
     return EmitCoroutineIntrinsic(E, Intrinsic::coro_align);
+  case Builtin::BI__builtin_coro_request_cancel:
+    EmitCoroutineIntrinsic(E, Intrinsic::coro_request_cancel);
+    return RValue::get(nullptr);
+  case Builtin::BI__builtin_coro_cancel_requested:
+    return EmitCoroutineIntrinsic(E, Intrinsic::coro_cancel_requested);
 
   // OpenCL v2.0 s6.13.16.2, Built-in pipe read and write functions
   case Builtin::BIread_pipe:

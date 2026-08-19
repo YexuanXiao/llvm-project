@@ -1212,6 +1212,12 @@ static void replaceFrameSizeAndAlignment(coro::Shape &Shape) {
 }
 
 static void postSplitCleanup(Function &F) {
+  // Remove the `llvm.coro.cancelled` marker. It is only needed to decide the
+  // frame layout; it has no runtime effect.
+  for (Instruction &I : llvm::make_early_inc_range(instructions(F)))
+    if (auto *II = dyn_cast<CoroCancelledInst>(&I))
+      II->eraseFromParent();
+
   removeUnreachableBlocks(F);
 
 #ifndef NDEBUG
@@ -2069,6 +2075,16 @@ static void removeCoroIsInRampFromRampFunction(const coro::Shape &Shape) {
   }
 }
 
+// The `llvm.coro.cancelled` marker in the ramp function lives in the
+// cancellation entry block. The clones already have it removed by
+// postSplitCleanup; remove it here as well so the ramp function does not
+// carry a dead marker around.
+static void removeCoroCancelledFromRampFunction(Function &F) {
+  for (Instruction &I : llvm::make_early_inc_range(instructions(F)))
+    if (auto *II = dyn_cast<CoroCancelledInst>(&I))
+      II->eraseFromParent();
+}
+
 static bool hasSafeElideCaller(Function &F) {
   for (auto *U : F.users()) {
     if (auto *CB = dyn_cast<CallBase>(U)) {
@@ -2134,6 +2150,7 @@ static void doSplitCoroutine(Function &F, SmallVectorImpl<Function *> &Clones,
 
   removeCoroEndsFromRampFunction(Shape);
   removeCoroIsInRampFromRampFunction(Shape);
+  removeCoroCancelledFromRampFunction(F);
 
   if (shouldCreateNoAllocVariant)
     SwitchCoroutineSplitter::createNoAllocVariant(F, Shape, Clones);

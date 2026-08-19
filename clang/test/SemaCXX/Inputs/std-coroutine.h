@@ -22,6 +22,8 @@ struct coroutine_handle {
   static coroutine_handle from_address(void *) noexcept;
   static coroutine_handle from_promise(Promise &promise);
   constexpr void* address() const noexcept;
+  void request_cancel() const;
+  bool cancel_requested() const;
 };
 template <>
 struct coroutine_handle<void> {
@@ -29,6 +31,8 @@ struct coroutine_handle<void> {
   coroutine_handle(coroutine_handle<PromiseType>) noexcept;
   static coroutine_handle from_address(void *);
   constexpr void* address() const noexcept;
+  void request_cancel() const;
+  bool cancel_requested() const;
 };
 
 struct suspend_always {

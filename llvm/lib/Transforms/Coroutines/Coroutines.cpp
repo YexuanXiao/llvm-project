@@ -94,6 +94,9 @@ static Intrinsic::ID NonOverloadedCoroIntrinsics[] = {
     Intrinsic::coro_subfn_addr,
     Intrinsic::coro_suspend,
     Intrinsic::coro_is_in_ramp,
+    Intrinsic::coro_cancelled,
+    Intrinsic::coro_request_cancel,
+    Intrinsic::coro_cancel_requested,
 };
 
 bool coro::isSuspendBlock(BasicBlock *BB) {
@@ -188,6 +191,7 @@ void coro::Shape::analyze(Function &F,
   bool HasFinalSuspend = false;
   bool HasUnwindCoroEnd = false;
   size_t FinalSuspendIndex = 0;
+  CoroCancelledInst *CancellationMarker = nullptr;
 
   for (Instruction &I : instructions(F)) {
     // FIXME: coro_await_suspend_* are not proper `IntrinisicInst`s
@@ -279,6 +283,12 @@ void coro::Shape::analyze(Function &F,
       case Intrinsic::coro_is_in_ramp:
         CoroIsInRampInsts.push_back(cast<CoroIsInRampInst>(II));
         break;
+      case Intrinsic::coro_cancelled:
+        if (CancellationMarker)
+          report_fatal_error("Only one llvm.coro.cancelled marker is allowed "
+                             "per coroutine");
+        CancellationMarker = cast<CoroCancelledInst>(II);
+        break;
       }
     }
   }
@@ -300,6 +310,7 @@ void coro::Shape::analyze(Function &F,
     SwitchLowering.ResumeSwitch = nullptr;
     SwitchLowering.PromiseAlloca = SwitchId->getPromise();
     SwitchLowering.ResumeEntryBlock = nullptr;
+    SwitchLowering.HasCancel = CancellationMarker != nullptr;
 
     // Move final suspend to the last element in the CoroSuspends vector.
     if (SwitchLowering.HasFinalSuspend &&

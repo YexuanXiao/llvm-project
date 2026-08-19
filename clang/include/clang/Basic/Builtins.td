@@ -4984,6 +4984,12 @@ def CoroPromise : CoroLangBuiltin {
   let Prototype = "void*(void*, _Constant int, _Constant bool)";
 }
 
+def CoroPromiseV2 : CoroLangBuiltin {
+  let Spellings = ["__builtin_coro_promise_v2"];
+  let Attributes = [NoThrow];
+  let Prototype = "size_t(_Constant int, _Constant bool)";
+}
+
 def CoroSize : CoroLangBuiltin {
   let Spellings = ["__builtin_coro_size"];
   let Attributes = [NoThrow];
@@ -5042,6 +5048,18 @@ def CoroSuspend : CoroLangBuiltin {
   let Spellings = ["__builtin_coro_suspend"];
   let Attributes = [NoThrow];
   let Prototype = "char(_Constant bool)";
+}
+
+def CoroRequestCancel : CoroLangBuiltin {
+  let Spellings = ["__builtin_coro_request_cancel"];
+  let Attributes = [NoThrow];
+  let Prototype = "void(void*)";
+}
+
+def CoroCancelRequested : CoroLangBuiltin {
+  let Spellings = ["__builtin_coro_cancel_requested"];
+  let Attributes = [NoThrow];
+  let Prototype = "bool(void*)";
 }
 
 // Pointer authentication builtins.

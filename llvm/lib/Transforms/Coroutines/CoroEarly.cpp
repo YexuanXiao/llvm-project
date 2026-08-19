@@ -27,6 +27,7 @@ class Lowerer : public coro::LowererBase {
   void lowerResumeOrDestroy(CallBase &CB, CoroSubFnInst::ResumeKind);
   void lowerCoroPromise(CoroPromiseInst *Intrin);
   void lowerCoroDone(IntrinsicInst *II);
+  void lowerCoroCancel(IntrinsicInst *II, Intrinsic::ID Action);
 
 public:
   Lowerer(Module &M)
@@ -90,6 +91,36 @@ void Lowerer::lowerCoroDone(IntrinsicInst *II) {
 
   II->replaceAllUsesWith(Cond);
   II->eraseFromParent();
+}
+
+// The cancellation flag of a cancellation-aware coroutine lives at the fixed
+// offset `2 * sizeof(void*)` in the coroutine frame, immediately after the
+// resume/destroy function pointers (guaranteed by CoroFrame::buildFrameLayout
+// reserving it before the promise). The offset depends only on the pointer
+// size, never on the promise type or the CoroFrame layout, so these
+// intrinsics can be lowered here (before CoroSplit), and they work through
+// any handle.
+void Lowerer::lowerCoroCancel(IntrinsicInst *II, Intrinsic::ID Action) {
+  Value *Operand = II->getArgOperand(0);
+  Type *Int8Ty = Builder.getInt8Ty();
+
+  Builder.SetInsertPoint(II);
+  // The element type must be i8 (not the Int8Ptr pointer type): the flag sits
+  // at byte offset 2 * ptrsize from the frame, so the GEP indices are bytes.
+  auto *FlagPtr = Builder.CreateInBoundsGEP(
+      Int8Ty, Operand,
+      Builder.getInt64(2 * TheModule.getDataLayout().getPointerSize()),
+      "flag.ptr");
+
+  if (Action == Intrinsic::coro_request_cancel) {
+    Builder.CreateStore(Builder.getInt8(1), FlagPtr);
+    II->eraseFromParent();
+  } else if (Action == Intrinsic::coro_cancel_requested) {
+    auto *Load = Builder.CreateLoad(Int8Ty, FlagPtr, "flag");
+    auto *Cond = Builder.CreateICmpNE(Load, Builder.getInt8(0), "flag.cond");
+    II->replaceAllUsesWith(Cond);
+    II->eraseFromParent();
+  }
 }
 
 // Prior to CoroSplit, calls to coro.begin needs to be marked as NoDuplicate,
@@ -168,7 +199,15 @@ void Lowerer::lowerEarlyIntrinsics(Function &F) {
       case Intrinsic::coro_done:
         lowerCoroDone(cast<IntrinsicInst>(&I));
         break;
-    }
+      case Intrinsic::coro_request_cancel:
+        lowerCoroCancel(cast<IntrinsicInst>(&I),
+                        Intrinsic::coro_request_cancel);
+        break;
+      case Intrinsic::coro_cancel_requested:
+        lowerCoroCancel(cast<IntrinsicInst>(&I),
+                        Intrinsic::coro_cancel_requested);
+        break;
+      }
   }
 
   if (CoroId) {
@@ -195,7 +234,8 @@ static bool declaresCoroEarlyIntrinsics(const Module &M) {
           Intrinsic::coro_id_retcon_once, Intrinsic::coro_id_async,
           Intrinsic::coro_destroy, Intrinsic::coro_done, Intrinsic::coro_end,
           Intrinsic::coro_end_async, Intrinsic::coro_free,
-          Intrinsic::coro_promise, Intrinsic::coro_resume});
+          Intrinsic::coro_promise, Intrinsic::coro_resume,
+          Intrinsic::coro_request_cancel, Intrinsic::coro_cancel_requested});
 }
 
 PreservedAnalyses CoroEarlyPass::run(Module &M, ModuleAnalysisManager &) {

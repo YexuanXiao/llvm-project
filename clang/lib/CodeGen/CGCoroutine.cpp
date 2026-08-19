@@ -49,6 +49,10 @@ struct clang::CodeGen::CGCoroData {
   // The promise type's 'unhandled_exception' handler, if it defines one.
   Stmt *ExceptionHandler = nullptr;
 
+  // The promise type's 'unhandled_cancellation' handler entry, if it defines
+  // one. Non-null means the coroutine is cancellation-aware.
+  llvm::BasicBlock *CancellationHandler = nullptr;
+
   // A temporary i1 alloca that stores whether 'await_resume' threw an
   // exception. If it did, 'true' is stored in this variable, and the coroutine
   // body must be skipped. If the promise type does not define an exception
@@ -338,6 +342,18 @@ static LValueOrRValue emitSuspendExpression(CodeGenFunction &CGF, CGCoroData &Co
 
   // Emit await_resume expression.
   CGF.EmitBlock(ReadyBlock);
+
+  // If this is a cancellation-aware coroutine, check the cancellation flag
+  // before running `await_resume`.
+  if (Coro.CancellationHandler && !IsFinalSuspend) {
+    llvm::Function *CancelRequestedFn =
+        CGF.CGM.getIntrinsic(llvm::Intrinsic::coro_cancel_requested);
+    auto *FlagCond =
+        CGF.Builder.CreateCall(CancelRequestedFn, CGF.CurCoro.Data->CoroBegin);
+    auto *ContBB = CGF.createBasicBlock(Prefix + Twine(".cancel.cont"));
+    Builder.CreateCondBr(FlagCond, Coro.CancellationHandler, ContBB);
+    CGF.EmitBlock(ContBB);
+  }
 
   // Exception handling requires additional IR. If the 'await_resume' function
   // is marked as 'noexcept', we avoid generating this additional IR.
@@ -1023,6 +1039,15 @@ void CodeGenFunction::EmitCoroutineBody(const CoroutineBodyStmt &S) {
     GroManager.EmitGroAlloca();
     GroManager.EmitGroInit();
 
+    if (S.getCancellationHandler()) {
+      CurCoro.Data->CancellationHandler = createBasicBlock("coro.cancel");
+
+      auto *FlagPtr = Builder.CreateInBoundsGEP(
+          Builder.getInt8Ty(), CurCoro.Data->CoroBegin,
+          Builder.getSize(2 * CGM.getDataLayout().getPointerSize()));
+      Builder.CreateAlignedStore(Builder.getInt8(0), FlagPtr, CharUnits::One());
+    }
+
     EHStack.pushCleanup<CallCoroEnd>(EHCleanup);
 
     CurCoro.Data->CleanupJD = getJumpDestInCurrentScope(CleanupBB);
@@ -1066,10 +1091,32 @@ void CodeGenFunction::EmitCoroutineBody(const CoroutineBodyStmt &S) {
       emitBodyAndFallthrough(*this, S, S.getBody());
     }
 
+    // Generate the cancellation entry block. Every suspension point checks
+    // the cancellation flag when resumed and branches here (see
+    // emitSuspendExpression) instead of continuing at the suspend point. The
+    // `llvm.coro.cancelled` marker lets LLVM's coroutine frame lowering
+    // detect that this coroutine is cancellation-aware and reserve the
+    // cancellation flag (i8) at the fixed offset `2 * ptrsize`, before the
+    // promise. In the destroy/cleanup clones this block is unreachable (the
+    // suspension-point checks are unreachable there) and is removed
+    // automatically.
+    if (CurCoro.Data->CancellationHandler) {
+      // The insertion point is the normal completion path of the body (e.g.
+      // the continuation after `unhandled_exception` in the catch path, or a
+      // fallthrough block). Terminate it explicitly so that EmitBlock below
+      // does not retarget it to the cancellation entry block.
+      if (Builder.GetInsertBlock())
+        Builder.CreateBr(FinalBB);
+      EmitBlock(CurCoro.Data->CancellationHandler);
+      Builder.CreateCall(CGM.getIntrinsic(llvm::Intrinsic::coro_cancelled));
+      EmitStmt(S.getCancellationHandler());
+      Builder.CreateBr(FinalBB);
+    }
+
     // See if we need to generate final suspend.
     const bool CanFallthrough = Builder.GetInsertBlock();
     const bool HasCoreturns = CurCoro.Data->CoreturnCount > 0;
-    if (CanFallthrough || HasCoreturns) {
+    if (CanFallthrough || HasCoreturns || CurCoro.Data->CancellationHandler) {
       EmitBlock(FinalBB);
       CurCoro.Data->CurrentAwaitKind = AwaitKind::Final;
       EmitStmt(S.getFinalSuspendStmt());
@@ -1147,6 +1194,25 @@ RValue CodeGenFunction::EmitCoroutineIntrinsic(const CallExpr *E,
         Builder.getIntNTy(Context.getTypeSize(Context.getSizeType()));
     llvm::Function *F = CGM.getIntrinsic(llvm::Intrinsic::coro_align, T);
     return RValue::get(Builder.CreateCall(F));
+  }
+  // __builtin_coro_promise_v2(alignment, cancellation_aware) returns the
+  // offset of the promise object within the coroutine frame:
+  //   unaware -> alignTo(2 * sizeof(void*), alignment), the standard layout
+  //              (identical to the `llvm.coro.promise` lowering);
+  //   aware   -> alignTo(2 * sizeof(void*) + 1, alignment), the
+  //              cancellation-aware layout, where the flag byte occupies the
+  //              byte right after the resume/destroy pointers.
+  case llvm::Intrinsic::coro_promise_unaware_cancel:
+  case llvm::Intrinsic::coro_promise_aware_cancel: {
+    auto *Align = cast<llvm::ConstantInt>(EmitScalarExpr(E->getArg(0)));
+    uint64_t PtrSize = CGM.getDataLayout().getPointerSize();
+    uint64_t Base = IID == llvm::Intrinsic::coro_promise_aware_cancel
+                        ? 2 * PtrSize + 1
+                        : 2 * PtrSize;
+    uint64_t Off = llvm::alignTo(Base, Align->getZExtValue());
+    unsigned Width = CGM.getDataLayout().getPointerSizeInBits();
+    return RValue::get(
+        llvm::ConstantInt::get(getLLVMContext(), llvm::APInt(Width, Off)));
   }
   // The following three intrinsics take a token parameter referring to a token
   // returned by earlier call to @llvm.coro.id. Since we cannot represent it in

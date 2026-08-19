@@ -121,6 +121,7 @@ struct Shape {
     bool HasFinalSuspend;
     bool HasUnwindCoroEnd;
     bool HasCoroElideNoAllocVariant;
+    bool HasCancel;
   };
 
   struct RetconLoweringStorage {

@@ -320,17 +320,18 @@ class CoroutineBodyStmt final
     : public Stmt,
       private llvm::TrailingObjects<CoroutineBodyStmt, Stmt *> {
   enum SubStmt {
-    Body,          ///< The body of the coroutine.
-    Promise,       ///< The promise statement.
-    InitSuspend,   ///< The initial suspend statement, run before the body.
-    FinalSuspend,  ///< The final suspend statement, run after the body.
-    OnException,   ///< Handler for exceptions thrown in the body.
-    OnFallthrough, ///< Handler for control flow falling off the body.
-    Allocate,      ///< Coroutine frame memory allocation.
-    Deallocate,    ///< Coroutine frame memory deallocation.
-    ResultDecl,    ///< Declaration holding the result of get_return_object.
-    ReturnValue,   ///< Return value for thunk function: p.get_return_object().
-    ReturnStmt,    ///< Return statement for the thunk function.
+    Body,           ///< The body of the coroutine.
+    Promise,        ///< The promise statement.
+    InitSuspend,    ///< The initial suspend statement, run before the body.
+    FinalSuspend,   ///< The final suspend statement, run after the body.
+    OnException,    ///< Handler for exceptions thrown in the body.
+    OnCancellation, ///< Handler invoked when a cancelled coroutine is resumed.
+    OnFallthrough,  ///< Handler for control flow falling off the body.
+    Allocate,       ///< Coroutine frame memory allocation.
+    Deallocate,     ///< Coroutine frame memory deallocation.
+    ResultDecl,     ///< Declaration holding the result of get_return_object.
+    ReturnValue,    ///< Return value for thunk function: p.get_return_object().
+    ReturnStmt,     ///< Return statement for the thunk function.
     ReturnStmtOnAllocFailure, ///< Return statement if allocation failed.
     FirstParamMove ///< First offset for move construction of parameter copies.
   };
@@ -352,6 +353,7 @@ public:
     Expr *InitialSuspend = nullptr;
     Expr *FinalSuspend = nullptr;
     Stmt *OnException = nullptr;
+    Stmt *OnCancellation = nullptr;
     Stmt *OnFallthrough = nullptr;
     Expr *Allocate = nullptr;
     Expr *Deallocate = nullptr;
@@ -398,6 +400,9 @@ public:
 
   Stmt *getExceptionHandler() const {
     return getStoredStmts()[SubStmt::OnException];
+  }
+  Stmt *getCancellationHandler() const {
+    return getStoredStmts()[SubStmt::OnCancellation];
   }
   Stmt *getFallthroughHandler() const {
     return getStoredStmts()[SubStmt::OnFallthrough];

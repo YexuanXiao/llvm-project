@@ -825,6 +825,13 @@ static void buildFrameLayout(Function &F, const DominatorTree &DT,
     (void)B.addField(FnPtrTy, MaybeAlign(), /*header*/ true);
     (void)B.addField(FnPtrTy, MaybeAlign(), /*header*/ true);
 
+    // Cancellation-aware coroutines carry a cancellation flag (i8) at the fixed
+    // offset `2 * ptrsize`, immediately after the resume/destroy function
+    // pointers and before the promise.
+    if (Shape.SwitchLowering.HasCancel)
+      (void)B.addField(Type::getInt8Ty(F.getContext()), MaybeAlign(),
+                       /*header*/ true);
+
     // PromiseAlloca field needs to be explicitly added here because it's
     // a header field with a fixed offset based on its alignment. Hence it
     // needs special handling.

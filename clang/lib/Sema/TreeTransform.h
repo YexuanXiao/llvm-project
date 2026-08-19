@@ -8925,6 +8925,7 @@ TreeTransform<Derived>::TransformCoroutineBodyStmt(CoroutineBodyStmt *S) {
     // is not dependent.
     if (!Promise->getType()->isDependentType()) {
       assert(!S->getFallthroughHandler() && !S->getExceptionHandler() &&
+             !S->getCancellationHandler() &&
              !S->getReturnStmtOnAllocFailure() && !S->getDeallocate() &&
              "these nodes should not have been built yet");
       if (!Builder.buildDependentStatements())
@@ -8943,6 +8944,13 @@ TreeTransform<Derived>::TransformCoroutineBodyStmt(CoroutineBodyStmt *S) {
       if (Res.isInvalid())
         return StmtError();
       Builder.OnException = Res.get();
+    }
+
+    if (auto *OnCancellation = S->getCancellationHandler()) {
+      StmtResult Res = getDerived().TransformStmt(OnCancellation);
+      if (Res.isInvalid())
+        return StmtError();
+      Builder.OnCancellation = Res.get();
     }
 
     if (auto *OnAllocFailure = S->getReturnStmtOnAllocFailure()) {

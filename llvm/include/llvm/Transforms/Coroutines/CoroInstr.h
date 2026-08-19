@@ -444,6 +444,20 @@ public:
   }
 };
 
+/// This represents the llvm.coro.cancelled instruction. It is a no-op marker
+/// emitted by the frontend as the first instruction of the cancellation entry
+/// block of a cancellation-aware coroutine.
+class CoroCancelledInst : public IntrinsicInst {
+public:
+  // Methods to support type inquiry through isa, cast, and dyn_cast:
+  static bool classof(const IntrinsicInst *I) {
+    return I->getIntrinsicID() == Intrinsic::coro_cancelled;
+  }
+  static bool classof(const Value *V) {
+    return isa<IntrinsicInst>(V) && classof(cast<IntrinsicInst>(V));
+  }
+};
+
 /// This represents the llvm.coro.free instruction.
 class CoroFreeInst : public IntrinsicInst {
   enum { IdArg, FrameArg };

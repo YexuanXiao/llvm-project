@@ -9,6 +9,11 @@ template <typename R, typename...> struct coroutine_traits {
 
 template <typename Promise = void> struct coroutine_handle;
 
+template <class Promise>
+concept __coro_cancellation_aware = requires(Promise &p) {
+  p.unhandled_cancellation();
+};
+
 template <> struct coroutine_handle<void> {
   static coroutine_handle from_address(void *addr) noexcept {
     coroutine_handle me;
@@ -20,6 +25,8 @@ template <> struct coroutine_handle<void> {
   void resume() const { __builtin_coro_resume(ptr); }
   void destroy() const { __builtin_coro_destroy(ptr); }
   bool done() const { return __builtin_coro_done(ptr); }
+  void request_cancel() const { __builtin_coro_request_cancel(ptr); }
+  bool cancel_requested() const { return __builtin_coro_cancel_requested(ptr); }
   coroutine_handle &operator=(decltype(nullptr)) {
     ptr = nullptr;
     return *this;
@@ -44,13 +51,17 @@ template <typename Promise> struct coroutine_handle : coroutine_handle<> {
 
   Promise &promise() const {
     return *reinterpret_cast<Promise *>(
-        __builtin_coro_promise(ptr, alignof(Promise), false));
+        reinterpret_cast<char *>(ptr) +
+        __builtin_coro_promise_v2(alignof(Promise), __coro_cancellation_aware<Promise>));
   }
   static coroutine_handle from_promise(Promise &promise) {
     coroutine_handle p;
-    p.ptr = __builtin_coro_promise(&promise, alignof(Promise), true);
+    p.ptr = reinterpret_cast<char *>(&promise) -
+            __builtin_coro_promise_v2(alignof(Promise), __coro_cancellation_aware<Promise>);
     return p;
   }
+  void request_cancel() const { __builtin_coro_request_cancel(ptr); }
+  bool cancel_requested() const { return __builtin_coro_cancel_requested(ptr); }
 };
 
 template <typename _PromiseT>

@@ -26,6 +26,12 @@
 
 _LIBCPP_BEGIN_NAMESPACE_STD
 
+// [coroutine.handle.cancel]
+//
+// A cancellation-aware promise declares `unhandled_cancellation()`.
+template <class _Promise>
+concept __coro_cancellation_aware = requires(_Promise& __p) { __p.unhandled_cancellation(); };
+
 // [coroutine.handle]
 template <class _Promise = void>
 struct coroutine_handle;
@@ -74,6 +80,19 @@ public:
     __builtin_coro_destroy(__handle_);
   }
 
+  // [coroutine.handle.cancel], cancellation
+  _LIBCPP_HIDE_FROM_ABI void request_cancel() const {
+    _LIBCPP_ASSERT_VALID_EXTERNAL_API_CALL(
+        __is_suspended(), "request_cancel() can be called only on suspended coroutines");
+    __builtin_coro_request_cancel(__handle_);
+  }
+
+  [[nodiscard]] _LIBCPP_HIDE_FROM_ABI bool cancel_requested() const {
+    _LIBCPP_ASSERT_VALID_EXTERNAL_API_CALL(
+        __is_suspended(), "cancel_requested() can be called only on suspended coroutines");
+    return __builtin_coro_cancel_requested(__handle_);
+  }
+
 private:
   _LIBCPP_HIDE_FROM_ABI bool __is_suspended() const {
     // FIXME actually implement a check for if the coro is suspended.
@@ -103,8 +122,8 @@ public:
   [[nodiscard]] _LIBCPP_HIDE_FROM_ABI static coroutine_handle from_promise(_Promise& __promise) {
     using _RawPromise = __remove_cv_t<_Promise>;
     coroutine_handle __tmp;
-    __tmp.__handle_ =
-        __builtin_coro_promise(std::addressof(const_cast<_RawPromise&>(__promise)), alignof(_Promise), true);
+    __tmp.__handle_ = reinterpret_cast<char*>(std::addressof(const_cast<_RawPromise&>(__promise))) -
+                      __builtin_coro_promise_v2(alignof(_Promise), __coro_cancellation_aware<_RawPromise>);
     return __tmp;
   }
 
@@ -151,7 +170,22 @@ public:
 
   // [coroutine.handle.promise], promise access
   [[nodiscard]] _LIBCPP_HIDE_FROM_ABI _Promise& promise() const {
-    return *static_cast<_Promise*>(__builtin_coro_promise(this->__handle_, alignof(_Promise), false));
+    return *reinterpret_cast<_Promise*>(
+        reinterpret_cast<char*>(this->__handle_) +
+        __builtin_coro_promise_v2(alignof(_Promise), __coro_cancellation_aware<_Promise>));
+  }
+
+  // [coroutine.handle.cancel], cancellation
+  _LIBCPP_HIDE_FROM_ABI void request_cancel() const {
+    _LIBCPP_ASSERT_VALID_EXTERNAL_API_CALL(
+        __is_suspended(), "request_cancel() can be called only on suspended coroutines");
+    __builtin_coro_request_cancel(__handle_);
+  }
+
+  [[nodiscard]] _LIBCPP_HIDE_FROM_ABI bool cancel_requested() const {
+    _LIBCPP_ASSERT_VALID_EXTERNAL_API_CALL(
+        __is_suspended(), "cancel_requested() can be called only on suspended coroutines");
+    return __builtin_coro_cancel_requested(__handle_);
   }
 
 private:
